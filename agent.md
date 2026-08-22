@@ -1,4 +1,4 @@
-# open-channels — agent instructions
+# OpenChannels — agent instructions
 
 One inbox over every channel you (the agent) sit on. **You own the channels the
 app can't reach; the app owns storage, the human view, and any channel it can

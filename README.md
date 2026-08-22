@@ -1,12 +1,12 @@
-<img src="readme-banner.png" alt="Open Channels preview" />
+<img src="readme-banner.png" alt="OpenChannels preview" />
 
-# Open Channels
+# OpenChannels
 
 **Every conversation your AI employee handles — WhatsApp, Telegram, Slack, email — in one inbox.**
 
 [![Deploy to Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/open-channels)
 
-An open-source shared inbox built for teams whose first responder is an AI agent. Where classic shared inboxes exist so *humans* can answer everything, Open Channels exists so a human can *review* everything: the agent triages, drafts, replies and logs what it did; you read one timeline per contact and jump in only when it matters.
+An open-source shared inbox built for teams whose first responder is an AI agent. Where classic shared inboxes exist so *humans* can answer everything, OpenChannels exists so a human can *review* everything: the agent triages, drafts, replies and logs what it did; you read one timeline per contact and jump in only when it matters.
 
 ## How it works
 
@@ -14,7 +14,7 @@ An open-source shared inbox built for teams whose first responder is an AI agent
 WhatsApp / Telegram / Slack / Email
         │  (channels the agent already sits on)
         ▼
-  Clawnify agent ──ingest──▶  Open Channels (this app)
+  Clawnify agent ──ingest──▶  OpenChannels (this app)
         ▲                     conversations · messages · audit trail
         └────outbox◀──────    replies you compose in the UI
 ```
