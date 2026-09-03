@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Archive, Inbox, PenLine, Search, Settings } from "lucide-react";
+import { Archive, Inbox, Menu, PenLine, Search, Settings, TriangleAlert } from "lucide-react";
 import type { Conversation, Stats } from "./api";
-import { contactLabel, getStats, listConversations, patchConversation } from "./api";
+import {
+  contactLabel,
+  getStats,
+  listConversations,
+  getConversation,
+  patchConversation,
+  startConversation,
+} from "./api";
 import { NewConversationDialog } from "./compose";
 import { WhatsAppSetup } from "./setup";
 import { ThreadPane } from "./thread";
@@ -148,6 +155,20 @@ function Sidebar({
   );
 }
 
+/** Opens the sidebar drawer on screens too narrow to keep it in view. */
+function MenuButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label="Open inbox filters"
+      className="-ml-1 inline-flex size-8 shrink-0 items-center justify-center rounded-sm text-muted transition-colors duration-150 hover:bg-sunken hover:text-foreground lg:hidden"
+    >
+      <Menu className="size-4" aria-hidden />
+    </button>
+  );
+}
+
 function ConversationRow({
   conversation,
   active,
@@ -176,6 +197,12 @@ function ConversationRow({
           >
             {name}
           </span>
+          {conversation.undelivered ? (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-danger/30 bg-danger-tint px-1.5 py-px text-[0.6875rem] text-danger">
+              <TriangleAlert className="size-3" aria-hidden />
+              Not delivered
+            </span>
+          ) : null}
           <span className="shrink-0 text-[0.6875rem] text-faint tabular-nums">
             {timeAgo(conversation.lastMessageAt)}
           </span>
@@ -197,18 +224,76 @@ function ConversationRow({
   );
 }
 
+/** `/c/<id>` → the conversation id, or null anywhere else. */
+function conversationIdFromPath(): string | null {
+  const m = window.location.pathname.match(/^\/c\/([^/?#]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+/**
+ * Point the address bar at a thread (or back at the inbox).
+ *
+ * `push` for a navigation the reader made — it should be undoable with the back
+ * button. `replace` for corrections they did not ask for, so we never bury the
+ * page they arrived from under history they did not create.
+ */
+function syncUrl(id: string | null, mode: "push" | "replace" = "push") {
+  const next = (id ? `/c/${encodeURIComponent(id)}` : "/") + window.location.search;
+  if (next === window.location.pathname + window.location.search) return;
+  window.history[mode === "push" ? "pushState" : "replaceState"]({ id }, "", next);
+}
+
 export function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [filter, setFilter] = useState<Filter>({ kind: "all" });
   const [search, setSearch] = useState("");
   const [conversations, setConversations] = useState<Conversation[] | null>(null);
   const [total, setTotal] = useState(0);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The open thread lives in the URL as /c/<id>, so a conversation is a place
+  // you can link to, refresh, and reach with the back button — not a mode the
+  // app happens to be in. Initialised from the address bar rather than null, so
+  // a reload lands on the same thread instead of an empty pane.
+  //
+  // A path (not ?c=) because the platform deploys apps with
+  // not_found_handling: "single-page-application" and run_worker_first limited
+  // to /api/* and /llms.txt — so /c/<id> reaches the SPA, verified against the
+  // deployer config rather than assumed.
+  const [selectedId, setSelectedId] = useState<string | null>(conversationIdFromPath());
   const [showNew, setShowNew] = useState(false);
+  /** Sidebar drawer on narrow screens (below lg the sidebar leaves the flow). */
+  const [drawer, setDrawer] = useState(false);
   /** A just-opened thread, so it renders before the list has refetched. */
   const [pending, setPending] = useState<Conversation | null>(null);
   const searchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  // A /c/<id> link may point at a thread the current filter, search or page
+  // does not contain — a closed one, or simply further down the list. Fetch it
+  // directly rather than showing an empty pane for a link that is perfectly
+  // valid. If it really is gone, drop back to the inbox and correct the URL
+  // (replace, not push: the reader did not ask to go anywhere).
+  useEffect(() => {
+    if (!selectedId) return;
+    if (conversations?.some((c) => c.id === selectedId)) return;
+    if (pending?.id === selectedId) return;
+    let cancelled = false;
+    getConversation(selectedId)
+      .then((c) => { if (!cancelled) setPending(c); })
+      .catch(() => {
+        if (cancelled) return;
+        setSelectedId(null);
+        syncUrl(null, "replace");
+      });
+    return () => { cancelled = true; };
+  }, [selectedId, conversations, pending]);
+
+  // Back/forward. The browser changed the URL without telling React, so the
+  // selection follows the address bar rather than the other way round.
+  useEffect(() => {
+    const onPop = () => setSelectedId(conversationIdFromPath());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   // Agent mode: larger tap targets + no hover-only affordances (index.css).
   useEffect(() => {
@@ -264,23 +349,87 @@ export function App() {
     setShowNew(false);
     setPending(conversation);
     setSelectedId(conversation.id);
+    syncUrl(conversation.id);
     setSearch("");
     setFilter({ kind: "all" });
   }
 
+  /**
+   * Deep link — `/?to=<handle>` opens that contact's thread on load, so another
+   * app can hand a person straight to their conversation instead of making the
+   * user search for them. Optional `name`, `channel` (default whatsapp), and
+   * `linkedApp`/`linkedRef` to tie the contact to the caller's own record.
+   *
+   * Runs once: the params are stripped afterwards so a refresh doesn't reopen a
+   * thread the user has since navigated away from, and so a URL they copy is
+   * just the inbox. Everything else in the query (`token`, `agent`) survives.
+   */
+  const deepLinked = useRef(false);
+  useEffect(() => {
+    if (deepLinked.current) return;
+    deepLinked.current = true;
+
+    const q = new URLSearchParams(window.location.search);
+    const handle = q.get("to")?.trim();
+    if (!handle) return;
+
+    const linkedApp = q.get("linkedApp");
+    const linkedRef = q.get("linkedRef");
+    startConversation({
+      channel: q.get("channel")?.trim() || "whatsapp",
+      handle,
+      name: q.get("name")?.trim() || undefined,
+      linked: linkedApp && linkedRef ? { appId: linkedApp, ref: linkedRef } : undefined,
+    })
+      .then(openStarted)
+      // A bad handle shouldn't strand the user on a blank screen. They still
+      // get the normal inbox and can start the thread by hand.
+      .catch(() => {});
+
+    for (const k of ["to", "name", "channel", "linkedApp", "linkedRef"]) q.delete(k);
+    const rest = q.toString();
+    window.history.replaceState({}, "", window.location.pathname + (rest ? `?${rest}` : ""));
+    // openStarted() has already pushed /c/<id>; this only drops the query.
+    // Mount-only by design — see the ref guard above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function select(conversation: Conversation) {
     setSelectedId(conversation.id);
+    syncUrl(conversation.id);
     if (conversation.unread) {
       await patchConversation(conversation.id, { unread: 0 }).catch(() => {});
       load().catch(() => {});
     }
   }
 
+  /** Filter changes made from the drawer also dismiss it. */
+  function navigate(f: Filter) {
+    setFilter(f);
+    setDrawer(false);
+  }
+
+  const sidebarDrawer = drawer ? (
+    <div className="fixed inset-0 z-40 lg:hidden">
+      <div
+        className="absolute inset-0 bg-foreground/25"
+        onMouseDown={() => setDrawer(false)}
+        aria-hidden
+      />
+      <div className="absolute inset-y-0 left-0 flex shadow-[0_8px_24px_rgba(0,0,0,0.16)]">
+        <Sidebar stats={stats} filter={filter} setFilter={navigate} />
+      </div>
+    </div>
+  ) : null;
+
   if (filter.kind === "setup") {
     return (
       <div className="flex h-full bg-background font-sans text-foreground">
-        <Sidebar stats={stats} filter={filter} setFilter={setFilter} />
-        <WhatsAppSetup />
+        <div className="hidden shrink-0 lg:flex">
+          <Sidebar stats={stats} filter={filter} setFilter={setFilter} />
+        </div>
+        <WhatsAppSetup menu={<MenuButton onClick={() => setDrawer(true)} />} />
+        {sidebarDrawer}
       </div>
     );
   }
@@ -294,14 +443,21 @@ export function App() {
 
   return (
     <div className="flex h-full bg-background font-sans text-foreground">
-      <Sidebar stats={stats} filter={filter} setFilter={setFilter} />
+      <div className="hidden shrink-0 lg:flex">
+        <Sidebar stats={stats} filter={filter} setFilter={setFilter} />
+      </div>
 
-      {/* Conversation list */}
-      <section className="flex w-[22rem] shrink-0 flex-col border-r border-border bg-surface">
+      {/* Conversation list — on phones it swaps out for the open thread. */}
+      <section
+        className={`${selected ? "hidden md:flex" : "flex"} w-full min-w-0 shrink-0 flex-col border-r border-border bg-surface md:w-[22rem]`}
+      >
         <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
-          <Eyebrow>
-            {listTitle} · {total}
-          </Eyebrow>
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <MenuButton onClick={() => setDrawer(true)} />
+            <Eyebrow>
+              {listTitle} · {total}
+            </Eyebrow>
+          </div>
           <button
             type="button"
             onClick={() => setShowNew(true)}
@@ -352,9 +508,23 @@ export function App() {
 
       {/* Thread */}
       {selected ? (
-        <ThreadPane conversation={selected} onConversationChanged={() => load().catch(() => {})} />
+        <ThreadPane
+          // Keyed by thread so switching conversations REMOUNTS rather than
+          // reusing the instance. Without it every piece of state outlives the
+          // switch: the previous thread's messages paint for a frame before the
+          // reset effect runs (effects fire after paint, so resetting there is
+          // always one frame late), and worse, a half-typed reply survives into
+          // the next thread — you can send one person's message to another.
+          key={selected.id}
+          conversation={selected}
+          onConversationChanged={() => load().catch(() => {})}
+          onBack={() => {
+            setSelectedId(null);
+            syncUrl(null);
+          }}
+        />
       ) : (
-        <section className="flex min-w-0 flex-1 items-center justify-center bg-background">
+        <section className="hidden min-w-0 flex-1 items-center justify-center bg-background md:flex">
           <div className="text-center">
             <Inbox className="mx-auto size-6 text-faint" aria-hidden />
             <p className="mt-3 text-sm text-muted">Select a conversation to read the thread.</p>
@@ -374,6 +544,8 @@ export function App() {
       {showNew ? (
         <NewConversationDialog onClose={() => setShowNew(false)} onOpened={openStarted} />
       ) : null}
+
+      {sidebarDrawer}
     </div>
   );
 }

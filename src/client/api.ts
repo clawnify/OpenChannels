@@ -51,6 +51,8 @@ export interface Conversation {
   subject: string | null;
   status: string;
   unread: number;
+  /** The last real message is an outbound the channel did not deliver. */
+  undelivered: boolean;
   lastMessageAt: string;
   lastMessagePreview: string;
   contact: Contact;
@@ -67,6 +69,8 @@ export interface Message {
   error: string | null;
   createdAt: string;
   templateName: string | null;
+  mediaRef: string | null;
+  mediaType: string | null;
 }
 
 export interface Template {
@@ -209,7 +213,8 @@ export interface Phone {
 export const setDefaultPhone = (id: string): Promise<{ ok: boolean }> =>
   request(`/api/whatsapp/phones/${id}/default`, { method: "POST" });
 
-export const listPhones = (): Promise<{ items: Phone[] }> => request("/api/whatsapp/phones");
+export const listPhones = (): Promise<{ wabaId: string; items: Phone[] }> =>
+  request("/api/whatsapp/phones");
 
 /** PIN goes straight to Meta; it is never stored here or returned. */
 export const registerPhone = (id: string, pin: string): Promise<{ ok: boolean }> =>
@@ -287,6 +292,11 @@ export const addComment = (conversationId: string, body: string): Promise<Messag
     method: "POST",
     body: JSON.stringify({ body }),
   });
+
+/** One thread by id — used to resolve a /c/<id> link to a thread the current
+ *  filter or page does not include. */
+export const getConversation = (conversationId: string): Promise<Conversation> =>
+  request(`/api/conversations/${conversationId}`);
 
 export const patchConversation = (
   conversationId: string,

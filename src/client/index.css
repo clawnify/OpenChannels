@@ -135,6 +135,26 @@ body,
   height: 100%;
 }
 
+/* Mobile browsers resize dvh with the URL bar; plain % leaves the composer
+ * hidden behind it. */
+@supports (height: 100dvh) {
+  html,
+  body,
+  #app {
+    height: 100dvh;
+  }
+}
+
+/* iOS Safari zooms the whole page when a focused control's font is under
+ * 16px. The !important is required to outrank Tailwind's text-[...] utilities. */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 1rem !important;
+  }
+}
+
 body {
   background: var(--oc-background);
   color: var(--oc-foreground);

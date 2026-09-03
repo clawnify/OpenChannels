@@ -14,10 +14,14 @@
     "@clawnify/db": "^0.4.1",
     "@clawnify/logokit": "^0.3.0",
     "@hono/zod-openapi": "^0.19.0",
+    "@radix-ui/react-popover": "^1.1.23",
+    "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "hono": "^4.0.0",
     "lucide-react": "^1.28.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.6.0",
     "zod": "^3.0.0"
   },
   "devDependencies": {
