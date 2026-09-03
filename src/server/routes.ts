@@ -8,7 +8,14 @@ import * as schema from "./schema";
 // deploy. It is how this app reaches a sibling app in the same org (see
 // callSibling). Optional in the type because a never-redeployed app predates
 // the injection — the code degrades to "no profile source" rather than 500ing.
-type Env = { Bindings: { DB: D1Database; CLAWNIFY_TOKEN?: string } };
+type Env = {
+  Bindings: {
+    DB: D1Database;
+    CLAWNIFY_TOKEN?: string;
+    /** Integration-owned WABA configuration, injected at deployment. */
+    WHATSAPP_BUSINESS_WABA_ID?: string;
+  };
+};
 const api = new OpenAPIHono<Env>();
 
 // getDB returns a D1 | Facet union whose generic select(fields) overloads
@@ -17,9 +24,75 @@ const api = new OpenAPIHono<Env>();
 type DB = DrizzleD1Database<typeof schema>;
 const dbFor = (env: Env["Bindings"]) => getDB(env, { schema }) as DB;
 
+// The token stays behind @clawnify/connections; the WABA is non-secret
+// connection configuration needed to address Meta's WABA-scoped edges.
+// This declaration also ensures connection changes are picked up on the next
+// Open Channels-only deployment, including its refreshed bearer-token fallback.
+const WHATSAPP_SERVICE = "whatsapp-business";
+const META_GRAPH_VERSION = "v23.0";
+
+function metaId(value: string | undefined, label: string): string {
+  const id = value?.trim() ?? "";
+  if (!/^\d+$/.test(id)) throw new Error(`${label} is not configured`);
+  return id;
+}
+
+function whatsappBusiness(env: Env["Bindings"]) {
+  return {
+    client: connect(WHATSAPP_SERVICE, env as never),
+    wabaId: metaId(env.WHATSAPP_BUSINESS_WABA_ID, "WhatsApp Business Account ID"),
+  };
+}
+
+const wabaEndpoint = (wabaId: string, edge: string) =>
+  `/${META_GRAPH_VERSION}/${wabaId}/${edge}`;
+const objectEndpoint = (id: string, label: string) =>
+  `/${META_GRAPH_VERSION}/${metaId(id, label)}`;
+
 /* ---------------------------------- shapes --------------------------------- */
 
 const CHANNELS = ["whatsapp", "telegram", "slack", "email", "sms", "other"] as const;
+
+/** Channels whose handle is a phone number, and so has one canonical spelling. */
+const PHONE_CHANNELS = new Set<string>(["whatsapp", "sms"]);
+
+/**
+ * The one true spelling of a contact's handle.
+ *
+ * Contacts are found by exact string match, so the same person arriving by two
+ * routes has to produce the same string or they become two contacts with two
+ * threads — and then a human opening "the thread" sees only half of what was
+ * said, which is exactly what this inbox exists to prevent. The two routes
+ * disagree by default: a provider webhook reports `+447428690456` while another
+ * app hands over whatever it happens to store, e.g. `447428690456`.
+ *
+ * This only ever reshapes what is already present. It never guesses a country
+ * code, because guessing one messages a stranger:
+ *
+ *   "+44 7428 690456" → "+447428690456"   punctuation and spaces dropped
+ *   "447428690456"    → "+447428690456"   the leading + providers omit
+ *   "00447428690456"  → "+447428690456"   international access code
+ *   "0640576368"      → null              national format — country unknowable
+ *
+ * Returns null when no canonical form can be derived without inventing data.
+ */
+function canonicalHandle(channel: string, handle: string): string | null {
+  const raw = handle.trim();
+  if (!raw) return null;
+  if (channel === "email") return raw.toLowerCase();
+  if (!PHONE_CHANNELS.has(channel)) return raw;
+
+  let digits = raw.replace(/\D/g, "");
+  if (!digits) return null;
+  // "00" is the international access code — the written form of "+".
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  // A single leading 0 is a national trunk prefix. Which country it belongs to
+  // is not recoverable from the number, so refuse rather than assume.
+  if (digits.startsWith("0")) return null;
+  // Shortest real E.164 is 8 digits (country code + subscriber); longest is 15.
+  if (digits.length < 8 || digits.length > 15) return null;
+  return `+${digits}`;
+}
 
 const ContactSchema = z
   .object({
@@ -52,6 +125,14 @@ const ConversationSchema = z
     lastMessageAt: z.string(),
     lastMessagePreview: z.string(),
     contact: ContactSchema,
+    /**
+     * The last real message in this thread is an outbound the channel did not
+     * deliver (status failed or undelivered). Rendered as a red chip; the
+     * transition to that state also flips the thread unread, so it asks for a
+     * human once and then files back into recency order — a permanently pinned
+     * failure from three weeks ago buries today's live conversations.
+     */
+    undelivered: z.boolean(),
     /** What this thread accepts right now — freeform, or template-only. */
     window: SendWindowSchema,
   })
@@ -68,8 +149,8 @@ const TemplateSchema = z
     bodyText: z.string(),
     variables: z.array(z.string()),
     /** The provider's own component array (header/body/footer/buttons). The
-     *  editor needs it to show what it is NOT editing, and an edit has to send
-     *  back the parts it is preserving. */
+     *  editor needs it to show what it is NOT editing, and callers building an
+     *  edit need to see the shape they are preserving. */
     components: z.array(z.unknown()),
     syncedAt: z.string(),
   })
@@ -87,6 +168,10 @@ const MessageSchema = z
     createdAt: z.string(),
     /** Set when this outbound message was sent as an approved template. */
     templateName: z.string().nullable(),
+    /** Channel reference to an attachment, when the message carried one. */
+    mediaRef: z.string().nullable(),
+    /** image | audio | video | document. */
+    mediaType: z.string().nullable(),
   })
   .openapi("Message");
 
@@ -237,10 +322,9 @@ type ProviderTemplate = {
  * takes freeform and has nothing to list.
  */
 /**
- * Deliberately well under the provider's own page cap: a full page is slow
- * enough to time out upstream, while smaller pages return comfortably.
- * Pagination below still walks the whole catalogue, so this costs round trips,
- * not coverage.
+ * Composio caps `limit` at 100, but a full page is slow enough that the broker
+ * hop times out (522). Smaller pages return inside the budget; pagination below
+ * still walks the whole catalogue, so this costs round trips, not coverage.
  */
 const PROVIDER_PAGE = 25;
 /** Backstop so a paging bug can't spin forever: 25 × 40 = 1000 templates. */
@@ -248,16 +332,22 @@ const MAX_PAGES = 40;
 
 const TEMPLATE_SOURCES: Record<string, (env: Env["Bindings"]) => Promise<ProviderTemplate[]>> = {
   whatsapp: async (env) => {
-    // Ask for APPROVED only — the picker must never offer one that will bounce.
-    const client = connect("whatsapp", env as never);
+    // Every status, not just APPROVED. The picker is already APPROVED-only (the
+    // list endpoint defaults to it), so filtering here as well bought nothing
+    // and cost the one thing people need to see: editing an approved template
+    // sends it back into review at Meta, and a catalogue of APPROVED-only made
+    // it VANISH — indistinguishable from deleted, with nothing to tell anyone
+    // it is coming back. Sync the lot; let the reader decide what to show.
+    const { client, wabaId } = whatsappBusiness(env);
     const all: ProviderTemplate[] = [];
     let after: string | undefined;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-      const result = await client.run("WHATSAPP_GET_MESSAGE_TEMPLATES", {
-        status: "APPROVED",
-        limit: PROVIDER_PAGE,
-        ...(after ? { after } : {}),
+      const result = await client.get(wabaEndpoint(wabaId, "message_templates"), {
+        query: {
+          limit: PROVIDER_PAGE,
+          ...(after ? { after } : {}),
+        },
       });
       const { items, nextCursor } = metaPage(result);
       all.push(...items);
@@ -270,14 +360,15 @@ const TEMPLATE_SOURCES: Record<string, (env: Env["Bindings"]) => Promise<Provide
 
 /**
  * Pull one page out of Meta's `{ data: [...], paging: { cursors: { after } } }`,
- * however deeply it arrives nested under `data` envelopes. Written defensively
- * on purpose: the shape is not ours, and a silent change should yield an empty
- * catalogue, never a crash.
+ * however deep the broker nests it under its own `data` envelope. Written
+ * defensively on purpose: the shape belongs to two vendors, and a silent change
+ * should yield an empty catalogue, never a crash.
  */
 /**
- * Descend through any `data` envelopes to Meta's own `{ data: [...], paging }`
- * node. Shared by every Meta reader here, and written defensively: the shape is
- * not ours, so an unexpected one should yield nothing rather than throw.
+ * Descend through the broker's `data` envelopes to Meta's own
+ * `{ data: [...], paging }` node. Shared by every Meta reader here, and written
+ * defensively: the shape belongs to two vendors, so an unexpected one should
+ * yield nothing rather than throw.
  */
 function unwrapMetaRows(result: unknown): {
   rows: Record<string, unknown>[];
@@ -348,7 +439,9 @@ async function replaceCatalogue(
       name: t.name,
       language: t.language,
       category: t.category ?? "UTILITY",
-      status: (t.status ?? "APPROVED").toUpperCase(),
+      // Never default to APPROVED: the catalogue now carries every status, and
+      // a provider that omits one must not get a free pass into the picker.
+      status: (t.status ?? "UNKNOWN").toUpperCase(),
       bodyText,
       variables: JSON.stringify(placeholdersIn(bodyText)),
       components: JSON.stringify(t.components ?? []),
@@ -385,6 +478,7 @@ const toConversation = (
   conv: typeof schema.conversations.$inferSelect,
   contact: typeof schema.contacts.$inferSelect,
   window: SendWindow,
+  undelivered = false,
 ) => ({
   id: conv.id,
   channel: conv.channel,
@@ -394,6 +488,7 @@ const toConversation = (
   lastMessageAt: conv.lastMessageAt,
   lastMessagePreview: conv.lastMessagePreview,
   contact: toContact(contact),
+  undelivered,
   window,
 });
 
@@ -407,6 +502,12 @@ const toMessage = (m: typeof schema.messages.$inferSelect) => ({
   error: m.error,
   createdAt: m.createdAt,
   templateName: m.templateName,
+  // Guarded because SQLite returns a double-quoted identifier as a STRING
+  // LITERAL when the column does not exist, so a missing migration silently
+  // hands every row the column's own name instead of failing. Anything that
+  // equals the column name is that bug, not data.
+  mediaRef: m.mediaRef && m.mediaRef !== "media_ref" ? m.mediaRef : null,
+  mediaType: m.mediaType && m.mediaType !== "media_type" ? m.mediaType : null,
 });
 
 const toTemplate = (t: typeof schema.templates.$inferSelect) => ({
@@ -463,10 +564,25 @@ const IngestSchema = z
     }),
     message: z.object({
       kind: z.enum(["inbound", "outbound"]).default("inbound"),
-      body: z.string().min(1),
+      // Not .min(1): a photo sent with no caption has an empty body and is
+      // still a message. Requiring text rejected those outright.
+      body: z.string(),
       externalId: z.string().optional(),
       at: z.string().datetime().optional(),
       authorName: z.string().optional(),
+      /**
+       * A picture, voice note or document on this message. `ref` is how the
+       * channel names it — Meta sends `whatsapp-media:<id>` to exchange for a
+       * short-lived URL, Bird sends a plain URL — so it is a reference to
+       * resolve later, not a link to render.
+       */
+      // Tolerant on the way in: a flow renders these through a template, so an
+      // absent attachment arrives as empty strings rather than being omitted.
+      // An empty ref means no attachment.
+      media: z.object({
+        ref: z.string(),
+        type: z.string().optional(),
+      }).optional(),
     }),
     subject: z.string().optional(),
   })
@@ -504,6 +620,12 @@ api.openapi(
     const now = new Date().toISOString();
     const at = input.message.at ?? now;
 
+    // Best-effort here, never rejected: this is a message that already reached
+    // us, and dropping a real inbound because its handle is oddly shaped loses
+    // something a person actually said. An un-canonicalisable handle is stored
+    // as given — worse for matching, but nothing is lost.
+    const handle = canonicalHandle(input.channel, input.contact.handle) ?? input.contact.handle;
+
     // Contact: find or create; refresh name/avatar when provided.
     let [contact] = await db
       .select()
@@ -512,7 +634,7 @@ api.openapi(
         and(
           eq(schema.contacts.orgId, org),
           eq(schema.contacts.channel, input.channel),
-          eq(schema.contacts.handle, input.contact.handle),
+          eq(schema.contacts.handle, handle),
         ),
       )
       .limit(1);
@@ -522,7 +644,7 @@ api.openapi(
         .values({
           orgId: org,
           channel: input.channel,
-          handle: input.contact.handle,
+          handle,
           // Provider-supplied → profileName. `name` is the human's to set.
           profileName: input.contact.name ?? null,
           avatarUrl: input.contact.avatarUrl ?? null,
@@ -593,6 +715,8 @@ api.openapi(
         authorName: input.message.authorName ?? (inbound ? contact.name ?? contact.handle : "Agent"),
         status: inbound ? null : "sent",
         externalId: input.message.externalId ?? null,
+        mediaRef: input.message.media?.ref?.trim() || null,
+        mediaType: (input.message.media?.ref?.trim() && input.message.media?.type?.trim()) || null,
         createdAt: at,
       })
       .returning();
@@ -603,7 +727,15 @@ api.openapi(
         subject: input.subject ?? conv.subject,
         // History backfill can arrive out of order — only advance the clock.
         ...(at >= conv.lastMessageAt
-          ? { lastMessageAt: at, lastMessagePreview: preview(input.message.body) }
+          ? {
+              lastMessageAt: at,
+              lastMessagePreview: preview(
+                input.message.body ||
+                  (input.message.media?.ref?.trim()
+                    ? `[${input.message.media.type?.trim() || "attachment"}]`
+                    : ""),
+              ),
+            }
           : {}),
         ...(inbound ? { unread: 1, status: "open" } : {}),
       })
@@ -660,9 +792,23 @@ api.openapi(
     }
     const where = and(...filters);
 
+    // The last message the CONTACT's timeline saw — outbound or inbound only,
+    // because a system audit line or an internal note written after a failed
+    // send would otherwise hide the failure. The flag renders as a chip and the
+    // failure transition marks the thread unread; the list itself stays in
+    // recency order.
+    const lastUndelivered = sql<number>`(
+      SELECT CASE WHEN m.kind = 'outbound' AND m.status IN ('failed','undelivered') THEN 1 ELSE 0 END
+      FROM messages m
+      WHERE m.conversation_id = ${schema.conversations.id}
+        AND m.kind IN ('inbound','outbound')
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 1
+    )`;
+
     const [rows, [{ total }]] = await Promise.all([
       db
-        .select({ conv: schema.conversations, contact: schema.contacts })
+        .select({ conv: schema.conversations, contact: schema.contacts, undelivered: lastUndelivered })
         .from(schema.conversations)
         .innerJoin(schema.contacts, eq(schema.conversations.contactId, schema.contacts.id))
         .where(where)
@@ -683,7 +829,7 @@ api.openapi(
     return c.json(
       {
         items: rows.map((r) =>
-          toConversation(r.conv, r.contact, windows.get(r.conv.id) ?? OPEN_WINDOW),
+          toConversation(r.conv, r.contact, windows.get(r.conv.id) ?? OPEN_WINDOW, r.undelivered === 1),
         ),
         total,
       },
@@ -923,6 +1069,7 @@ api.openapi(
     responses: {
       200: jsonRes(ConversationSchema, "The conversation (existing or new)"),
       401: jsonRes(ErrorSchema, "No org identity"),
+      422: jsonRes(ErrorSchema, "Handle has no canonical form — a phone number needs its country code"),
     },
   }),
   async (c) => {
@@ -932,6 +1079,20 @@ api.openapi(
     const db = dbFor(c.env);
     const now = new Date().toISOString();
 
+    // Strict here, unlike ingest: opening a thread is the prelude to sending,
+    // and a handle with no canonical form has no country code — the provider
+    // would reject it anyway. Failing now names the bad record; failing later
+    // leaves a dead thread that looks real to whoever opens it.
+    const handle = canonicalHandle(input.channel, input.handle);
+    if (!handle) {
+      return c.json(
+        {
+          error: `"${input.handle}" is not a usable ${input.channel} handle. Phone numbers need a country code (e.g. +447428690456) — a national-format number like 0640576368 could belong to any country.`,
+        },
+        422,
+      );
+    }
+
     let [contact] = await db
       .select()
       .from(schema.contacts)
@@ -939,7 +1100,7 @@ api.openapi(
         and(
           eq(schema.contacts.orgId, org),
           eq(schema.contacts.channel, input.channel),
-          eq(schema.contacts.handle, input.handle),
+          eq(schema.contacts.handle, handle),
         ),
       )
       .limit(1);
@@ -949,7 +1110,7 @@ api.openapi(
         .values({
           orgId: org,
           channel: input.channel,
-          handle: input.handle,
+          handle,
           name: input.name ?? null,
           linkedAppId: input.linked?.appId ?? null,
           linkedRef: input.linked?.ref ?? null,
@@ -1266,8 +1427,17 @@ api.openapi(
                 variables: input.template.variables,
               }
             : undefined,
-          fromPhoneNumberId:
-            input.fromPhoneNumberId ?? (await readSetting(db, conv.orgId, DEFAULT_PHONE_KEY)),
+          // Kept apart on purpose. A number picked in the composer is a human's
+          // decision and is honoured as-is; the default is only a fallback, so
+          // the sender may prefer a number local to the recipient over it.
+          fromPhoneNumberId: input.fromPhoneNumberId ?? null,
+          defaultPhoneNumberId: await readSetting(db, conv.orgId, DEFAULT_PHONE_KEY),
+          // Only a template may pick a local number. The 24-hour window belongs
+          // to the number the contact actually wrote to, and we do not record
+          // which one that was — so switching sender on a freeform reply would
+          // send it to a number with no open session, and WhatsApp would refuse
+          // it. A template needs no session, so it is always safe.
+          preferLocal: !!input.template,
         });
         // Meta replies `accepted` — queued for delivery, NOT delivered. It can
         // still be dropped (no opt-in, marketing caps, quality limits) and the
@@ -1524,31 +1694,13 @@ api.openapi(
 /* ------------------------ writing a template to Meta ----------------------- */
 
 /**
- * Creating a template and editing one are two different calls to Meta, and only
- * one of them has an action behind it.
- *
- *   - **Create** is `WHATSAPP_CREATE_MESSAGE_TEMPLATE`. It works, and it takes
- *     `allow_category_change` so Meta's own read of the copy wins.
- *   - **Edit** has no action at all. WhatsApp publishes 57 of them and none
- *     edits a template. `WHATSAPP_UPSERT_MESSAGE_TEMPLATE` looks like the one
- *     and is bound to Meta's `upsert_message_templates`, the AUTHENTICATION
- *     endpoint — which is why it answers `Param category must be one of
- *     {AUTHENTICATION}` and `Unexpected key "text"`, neither of which reads
- *     like "wrong endpoint". No arrangement of arguments makes it edit
- *     marketing copy.
- *
- * So the edit goes out as a raw request to Meta's real edit endpoint,
- * `POST /{template_id}`, signed with the org's own connection —
- * `connect(...).rawRequest` in `@clawnify/connections`, for the case an action
- * catalogue does not cover. Talking to Meta directly also means Meta's
- * documented shapes apply: `example.body_text` nested as an array of example
- * sets, exactly as the catalogue returns it.
+ * Templates are WABA-scoped except edits, which Meta addresses by template id.
+ * The own-tier `whatsapp-business` connection makes these documented Graph
+ * calls with the org's integration token; no Composio action is involved.
  *
  * The samples are never optional. A body with variables and no examples is one
  * Meta can only categorise as AUTHENTICATION, and the write is refused.
  */
-const TEMPLATE_CREATE_ACTION = "WHATSAPP_CREATE_MESSAGE_TEMPLATE";
-
 /**
  * The provider's own complaint, recovered from whatever the SDK threw.
  *
@@ -1749,7 +1901,8 @@ api.openapi(
     type CreatedTemplate = { id?: unknown; status?: unknown; category?: unknown };
     let created: CreatedTemplate | null = null;
     try {
-      created = (await connect("whatsapp", c.env as never).run(TEMPLATE_CREATE_ACTION, {
+      const { client, wabaId } = whatsappBusiness(c.env);
+      created = (await client.post(wabaEndpoint(wabaId, "message_templates"), {
         name: input.name,
         language: input.language,
         category: input.category,
@@ -1760,8 +1913,8 @@ api.openapi(
       return c.json({ error: providerError(e) }, 424);
     }
 
-    // Meta's answer arrives either bare or wrapped in a `data` envelope, the
-    // same as every read here. One unwrap, then read it either way.
+    // Meta's answer arrives either bare or inside the broker's `data` envelope,
+    // the same as every read here. One unwrap, then read it either way.
     const answer: CreatedTemplate =
       created && typeof (created as { data?: unknown }).data === "object"
         ? ((created as { data: CreatedTemplate }).data ?? {})
@@ -1918,17 +2071,14 @@ api.openapi(
 
     const components = componentsForWrite(stored, bodyText, bodyExample(after, values));
     try {
-      // Meta's own edit endpoint, reached with the org's connection. `category`
+      // Meta's own edit endpoint. `category`
       // is deliberately absent: an edit that names one is refused when Meta's
       // verdict differs ("The category UTILITY doesn't match the one that's
       // already associated with this template, MARKETING"), and omitting it
       // leaves the template exactly where it was — which is what an edit to
       // the copy should do.
-      await connect("whatsapp", c.env as never).rawRequest({
-        method: "POST",
-        endpoint: `/${row.externalId}`,
-        body: { components },
-      });
+      const { client } = whatsappBusiness(c.env);
+      await client.post(objectEndpoint(row.externalId, "template ID"), { components });
     } catch (e) {
       return c.json({ error: providerError(e) }, 424);
     }
@@ -2022,11 +2172,14 @@ api.openapi(
     }
 
     try {
-      await connect("whatsapp", c.env as never).run("WHATSAPP_DELETE_MESSAGE_TEMPLATE", {
-        name: row.name,
+      const { client, wabaId } = whatsappBusiness(c.env);
+      await client.delete(wabaEndpoint(wabaId, "message_templates"), {
+        query: {
+          name: row.name,
         // Narrows the delete to this one language variant. Without it Meta
         // deletes every language sharing the name.
-        hsm_id: row.externalId,
+          hsm_id: row.externalId,
+        },
       });
     } catch (e) {
       return c.json({ error: providerError(e) }, 424);
@@ -2082,7 +2235,7 @@ const PROFILE_SOURCE_KEY = "profile_source";
 interface ProfileSource {
   /** Sibling app's platform UUID — must be in this org. */
   appId: string;
-  /** Human label for the UI — the app's own name, e.g. "Customers". */
+  /** Human label for the UI, e.g. "Add One Hub". */
   label?: string;
   /** How to search it. `collection` names the array key in the response body. */
   search: { path: string; query: string; collection?: string };
@@ -2175,6 +2328,35 @@ const readSetting = async (db: DB, org: string, key: string): Promise<string | n
   return row?.value ?? null;
 };
 
+/**
+ * Dialling codes we hold sending numbers in.
+ *
+ * Ordered longest first because codes are not fixed width: matching "1" before
+ * "31" would make every Dutch number look American. Add a code here when the
+ * account gains a number in a new country — an unlisted one simply means no
+ * local match, and the send falls back to the default rather than misrouting.
+ */
+const DIALLING_CODES = ["353", "31", "44", "49", "61", "1"];
+
+const dialCode = (number: string): string => {
+  const digits = number.replace(/\D/g, "");
+  return DIALLING_CODES.find((code) => digits.startsWith(code)) ?? "";
+};
+
+/**
+ * A predicate for "this sender is in the same country as the recipient".
+ *
+ * WhatsApp does not require it, but a local number is what the recipient
+ * recognises, and a +1 contact receiving from a Dutch number reads as spam —
+ * which is the likeliest reason a confirmation to a US number came back
+ * undelivered on 12 Aug 2026.
+ */
+const sameCountry = (to: string) => {
+  const want = dialCode(to);
+  return (phone: { displayPhoneNumber: string }) =>
+    want !== "" && dialCode(phone.displayPhoneNumber) === want;
+};
+
 const CHANNEL_SENDERS: Record<
   string,
   (
@@ -2183,16 +2365,20 @@ const CHANNEL_SENDERS: Record<
     message: {
       body: string;
       template?: { name: string; language: string; variables: Record<string, string> };
-      /** Explicit sending number: a per-send override, else the org default. */
+      /** Explicit sending number — a human chose it. Always honoured. */
       fromPhoneNumberId?: string | null;
+      /** The org default, used only when nothing better applies. */
+      defaultPhoneNumberId?: string | null;
+      /** May this send switch to a number local to the recipient? */
+      preferLocal?: boolean;
     },
   ) => Promise<SendResult>
 > = {
   whatsapp: async (env, to, message) => {
-    const client = connect("whatsapp", env as never);
+    const { client, wabaId } = whatsappBusiness(env);
 
     // Meta wants the sending number's id, not the number.
-    const phones = metaPhones(await client.run("WHATSAPP_GET_PHONE_NUMBERS", {}));
+    const phones = metaPhones(await client.get(wabaEndpoint(wabaId, "phone_numbers")));
     const registered = phones.filter((p) => p.registered);
     if (registered.length === 0) {
       throw new Error(
@@ -2200,14 +2386,23 @@ const CHANNEL_SENDERS: Record<
       );
     }
 
-    // Override → configured default → the only registered number. Never fall
-    // back to "the first one" when several exist: the number the recipient
-    // sees is not something to leave to provider ordering.
+    // Override → a number local to the recipient → configured default → the
+    // only registered number. Never fall back to "the first one" when several
+    // exist: the number the recipient sees is not something to leave to
+    // provider ordering.
+    //
+    // The local step is what stops a message to a +1 contact leaving from the
+    // Dutch number. Automated senders — the flows and the Hub — pass no number
+    // at all, so before this they all landed on the org default whoever they
+    // were writing to.
+    const local = sameCountry(to);
     const from = message.fromPhoneNumberId
       ? registered.find((p) => p.id === message.fromPhoneNumberId)
-      : registered.length === 1
-        ? registered[0]
-        : undefined;
+      : ((message.preferLocal ? registered.find(local) : undefined) ??
+        (message.defaultPhoneNumberId
+          ? registered.find((p) => p.id === message.defaultPhoneNumberId)
+          : undefined) ??
+        (registered.length === 1 ? registered[0] : undefined));
     if (!from) {
       throw new Error(
         message.fromPhoneNumberId
@@ -2220,17 +2415,22 @@ const CHANNEL_SENDERS: Record<
     const toDigits = to.replace(/\D/g, "");
 
     const result = message.template
-      ? await client.run("WHATSAPP_SEND_TEMPLATE_MESSAGE", {
-          phone_number_id: from.id,
-          to_number: toDigits,
-          template_name: message.template.name,
-          language_code: message.template.language,
-          components: templateComponents(message.template.variables),
+      ? await client.post(`${objectEndpoint(from.id, "phone number ID")}/messages`, {
+          messaging_product: "whatsapp",
+          to: toDigits,
+          type: "template",
+          template: {
+            name: message.template.name,
+            language: { code: message.template.language },
+            components: templateComponents(message.template.variables),
+          },
         })
-      : await client.run("WHATSAPP_SEND_MESSAGE", {
-          phone_number_id: from.id,
-          to_number: toDigits,
-          text: message.body,
+      : await client.post(`${objectEndpoint(from.id, "phone number ID")}/messages`, {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: toDigits,
+          type: "text",
+          text: { preview_url: false, body: message.body },
         });
 
     return { externalId: wamidOf(result) };
@@ -2270,6 +2470,80 @@ function wamidOf(result: unknown): string | null {
   return null;
 }
 
+/* ----------------------------- what was sent ------------------------------ */
+
+const SentTemplateSchema = z
+  .object({
+    handle: z.string(),
+    channel: z.string(),
+    templateName: z.string(),
+    /** accepted = the provider took it; sent = confirmed by the agent. */
+    status: z.string().nullable(),
+    at: z.string(),
+    /** Who sent it — a person's name, or "Agent" for an automation. */
+    authorName: z.string().nullable(),
+  })
+  .openapi("SentTemplate");
+
+api.openapi(
+  createRoute({
+    method: "get",
+    path: "/api/sent-templates",
+    summary: "Which approved templates have already gone out, and to whom",
+    description:
+      "One flat list of every template that actually left this app, keyed by the contact's handle. This inbox is a shared space — a person sending from the UI and an automation sending on a schedule both land here — so this is the only place that can answer 'has this already been sent?' for BOTH. Anything deciding whether to send should check here first, exactly as a human reads the thread before typing.\n\nFailed sends are excluded: those did not reach anyone, so they are still owed. Ordered newest first.",
+    request: {
+      query: z.object({
+        channel: z.enum(CHANNELS).optional(),
+        /** ISO timestamp — only messages at or after this. */
+        since: z.string().optional(),
+        limit: z.coerce.number().int().min(1).max(1000).default(500),
+      }),
+    },
+    responses: {
+      200: jsonRes(
+        z.object({ items: z.array(SentTemplateSchema) }).openapi("SentTemplateList"),
+        "Templates already delivered, newest first",
+      ),
+      401: jsonRes(ErrorSchema, "No org identity"),
+    },
+  }),
+  async (c) => {
+    const org = orgId(c);
+    if (!org) return c.json({ error: "unauthorized" }, 401);
+    const q = c.req.valid("query");
+    const db = dbFor(c.env);
+
+    const filters = [
+      eq(schema.messages.orgId, org),
+      eq(schema.messages.kind, "outbound"),
+      sql`${schema.messages.templateName} is not null`,
+      // A failed send reached nobody, so it must not suppress a retry.
+      sql`coalesce(${schema.messages.status}, '') != 'failed'`,
+    ];
+    if (q.since) filters.push(sql`${schema.messages.createdAt} >= ${q.since}`);
+    if (q.channel) filters.push(eq(schema.conversations.channel, q.channel));
+
+    const rows = await db
+      .select({
+        handle: schema.contacts.handle,
+        channel: schema.conversations.channel,
+        templateName: schema.messages.templateName,
+        status: schema.messages.status,
+        at: schema.messages.createdAt,
+        authorName: schema.messages.authorName,
+      })
+      .from(schema.messages)
+      .innerJoin(schema.conversations, eq(schema.messages.conversationId, schema.conversations.id))
+      .innerJoin(schema.contacts, eq(schema.conversations.contactId, schema.contacts.id))
+      .where(and(...filters))
+      .orderBy(desc(schema.messages.createdAt))
+      .limit(q.limit);
+
+    return c.json({ items: rows.map((r) => ({ ...r, templateName: r.templateName! })) }, 200);
+  },
+);
+
 /* ------------------------------ channel setup ------------------------------ */
 
 const PhoneSchema = z
@@ -2297,7 +2571,14 @@ api.openapi(
     description:
       "Setup view: which numbers exist and which can actually send. A number only sends once `platformType` is CLOUD_API — until then every queued message fails at the provider, whatever the inbox says.",
     responses: {
-      200: jsonRes(z.object({ items: z.array(PhoneSchema) }).openapi("PhoneList"), "The numbers"),
+      200: jsonRes(
+        z.object({
+          /** Non-secret diagnostic: confirms which WABA this deployment addresses. */
+          wabaId: z.string(),
+          items: z.array(PhoneSchema),
+        }).openapi("PhoneList"),
+        "The numbers",
+      ),
       401: jsonRes(ErrorSchema, "No org identity"),
       424: jsonRes(ErrorSchema, "WhatsApp isn't connected or returned an error"),
     },
@@ -2306,7 +2587,8 @@ api.openapi(
     const org = orgId(c);
     if (!org) return c.json({ error: "unauthorized" }, 401);
     try {
-      const result = await connect("whatsapp", c.env as never).run("WHATSAPP_GET_PHONE_NUMBERS", {});
+      const { client, wabaId } = whatsappBusiness(c.env);
+      const result = await client.get(wabaEndpoint(wabaId, "phone_numbers"));
       const phones = metaPhones(result);
       const configured = await readSetting(dbFor(c.env), org, DEFAULT_PHONE_KEY);
       const registered = phones.filter((p) => p.registered);
@@ -2314,7 +2596,7 @@ api.openapi(
       // showing "no default set" there would be a chore with one right answer.
       const effective = configured ?? (registered.length === 1 ? registered[0].id : null);
       return c.json(
-        { items: phones.map((p) => ({ ...p, isDefault: p.id === effective })) },
+        { wabaId, items: phones.map((p) => ({ ...p, isDefault: p.id === effective })) },
         200,
       );
     } catch (err) {
@@ -2345,9 +2627,8 @@ api.openapi(
 
     let phones: ProviderPhone[];
     try {
-      phones = metaPhones(
-        await connect("whatsapp", c.env as never).run("WHATSAPP_GET_PHONE_NUMBERS", {}),
-      );
+      const { client, wabaId } = whatsappBusiness(c.env);
+      phones = metaPhones(await client.get(wabaEndpoint(wabaId, "phone_numbers")));
     } catch (err) {
       return c.json({ error: `could not reach whatsapp: ${err}` }, 424);
     }
@@ -2399,8 +2680,9 @@ api.openapi(
     const { pin } = c.req.valid("json");
     try {
       // pin is passed straight through; never persisted and never echoed back.
-      await connect("whatsapp", c.env as never).run("WHATSAPP_REGISTER_PHONE", {
-        phone_number_id: id,
+      const { client } = whatsappBusiness(c.env);
+      await client.post(objectEndpoint(id, "phone number ID"), {
+        messaging_product: "whatsapp",
         pin,
       });
       return c.json({ ok: true }, 200);
@@ -2413,8 +2695,8 @@ api.openapi(
 );
 
 /**
- * Map Meta's phone-number rows, tolerating however they arrive nested. Knows
- * nothing about defaults — that's this app's state, not the provider's.
+ * Map Meta's phone-number rows, tolerating the broker's nesting. Knows nothing
+ * about defaults — that's this app's state, not the provider's.
  */
 type ProviderPhone = Omit<z.infer<typeof PhoneSchema>, "isDefault">;
 
@@ -2580,9 +2862,134 @@ api.openapi(
       .update(schema.messages)
       .set({ status: body.status, error: body.status === "failed" ? body.error ?? "send failed" : null })
       .where(and(eq(schema.messages.orgId, org), eq(schema.messages.id, id)))
-      .returning({ id: schema.messages.id });
+      .returning({ id: schema.messages.id, conversationId: schema.messages.conversationId });
     if (!row) return c.json({ error: "not found" }, 404);
+    // A failed send needs a human once. Unread is that signal — the thread
+    // surfaces the way any new activity does, instead of being pinned forever.
+    if (body.status === "failed") {
+      await db
+        .update(schema.conversations)
+        .set({ unread: 1 })
+        .where(eq(schema.conversations.id, row.conversationId));
+    }
     return c.json({ ok: true }, 200);
+  },
+);
+
+/* --------------------------- delivery receipts ---------------------------- */
+
+/**
+ * How far a message has got. Receipts arrive out of order — a `read` can land
+ * before the `delivered` that preceded it — so progress is ranked and only ever
+ * moves forward. Without this, a late receipt silently demotes a message the
+ * recipient has already read.
+ */
+const DELIVERY_RANK: Record<string, number> = {
+  queued: 0,
+  accepted: 1,
+  sent: 2,
+  delivered: 3,
+  read: 4,
+};
+
+/**
+ * `failed` and `undelivered` are NOT the same thing, and conflating them is a
+ * live footgun:
+ *
+ *   failed       — the send threw when we called the provider. It never left.
+ *                  Still owed, so `sent-templates` excludes it and any sweep
+ *                  will try again. Correct.
+ *   undelivered  — the provider ACCEPTED it, then reported it wasn't delivered
+ *                  (number not on WhatsApp, or throttled "to maintain healthy
+ *                  ecosystem engagement"). Retrying is wrong: for a dead number
+ *                  it's pointless, and for throttling it is precisely the
+ *                  behaviour being throttled, which costs quality rating.
+ *
+ * So `undelivered` still counts as sent for dedupe, and shows red for a human.
+ */
+const providerStatusToOurs: Record<string, string> = {
+  sent: "sent",
+  delivered: "delivered",
+  read: "read",
+  failed: "undelivered",
+};
+
+api.openapi(
+  createRoute({
+    method: "post",
+    path: "/api/messages/by-external/:externalId/status",
+    summary: "Record a provider delivery receipt against the message it belongs to",
+    description:
+      "Keyed on the provider's own message id (`externalId`) because a receipt arrives with that and nothing else — the caller has no way to know our id.\n\nA receipt only ever moves a message forward (sent → delivered → read), since receipts arrive out of order. A provider `failed` becomes `undelivered`: the message left us and the provider refused it, which is a different thing from a send that never happened and must not be retried automatically.",
+    request: {
+      params: z.object({ externalId: z.string().min(1) }),
+      body: jsonBody(
+        z
+          .object({
+            status: z.enum(["sent", "delivered", "read", "failed"]),
+            error: z.string().optional(),
+          })
+          .openapi("ProviderReceipt"),
+      ),
+    },
+    responses: {
+      200: jsonRes(
+        z.object({ ok: z.boolean(), status: z.string(), changed: z.boolean() }).openapi("ReceiptResult"),
+        "Recorded (changed=false when the receipt was stale or out of order)",
+      ),
+      401: jsonRes(ErrorSchema, "No org identity"),
+      404: jsonRes(ErrorSchema, "No message with that provider id"),
+    },
+  }),
+  async (c) => {
+    const org = orgId(c);
+    if (!org) return c.json({ error: "unauthorized" }, 401);
+    const { externalId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const db = dbFor(c.env);
+
+    const [msg] = await db
+      .select({
+        id: schema.messages.id,
+        status: schema.messages.status,
+        conversationId: schema.messages.conversationId,
+      })
+      .from(schema.messages)
+      .where(and(eq(schema.messages.orgId, org), eq(schema.messages.externalId, externalId)))
+      .limit(1);
+    // A receipt for something we never stored is not an error worth retrying —
+    // it usually means the outbound was sent outside this app.
+    if (!msg) return c.json({ error: `no message with externalId "${externalId}"` }, 404);
+
+    const next = providerStatusToOurs[body.status];
+    const current = msg.status ?? "";
+
+    // Never overwrite a terminal outcome, and never walk backwards.
+    const isTerminal = current === "undelivered" || current === "failed";
+    const goesBackwards =
+      next in DELIVERY_RANK &&
+      current in DELIVERY_RANK &&
+      DELIVERY_RANK[next] <= DELIVERY_RANK[current];
+    if (isTerminal || goesBackwards) {
+      return c.json({ ok: true, status: current, changed: false }, 200);
+    }
+
+    await db
+      .update(schema.messages)
+      .set({
+        status: next,
+        error: next === "undelivered" ? (body.error ?? "the provider did not deliver it") : null,
+      })
+      .where(eq(schema.messages.id, msg.id));
+    // Same contract as a failed send: an undelivered receipt flips the thread
+    // unread so it asks for attention once, rather than pinning to the top.
+    if (next === "undelivered") {
+      await db
+        .update(schema.conversations)
+        .set({ unread: 1 })
+        .where(eq(schema.conversations.id, msg.conversationId));
+    }
+    return c.json({ ok: true, status: next, changed: true }, 200);
   },
 );
 

@@ -1,9 +1,16 @@
--- open-channels — baseline schema for the deployed instance.
+-- The DDL the deploy applies. Generated from src/server/schema.ts and kept in
+-- sync with it — schema.ts types the queries, this file is what actually
+-- reaches D1.
 --
--- Mirrors src/server/schema.ts (drizzle). The platform's CLI deploy path
--- applies schema.sql on every build and does not run drizzle/ migrations,
--- so the DDL is kept idempotent (IF NOT EXISTS) and this file must be
--- regenerated whenever schema.ts changes.
+-- It exists because `clawnify deploy` reconciles THIS file and nothing else:
+-- applyPendingMigrations (which reads drizzle/) runs only on the agent build
+-- path. Without a schema.sql, a CLI deploy applied no schema change at all,
+-- and the failure was silent in the worst way — SQLite returns a double-quoted
+-- identifier as a string literal, so a column that did not exist came back as
+-- its own name on every row rather than raising.
+--
+-- Reconcile is additive: it adds missing columns and never drops anything, so
+-- regenerating this file is safe against a live database.
 
 CREATE TABLE IF NOT EXISTS `contacts` (
 	`id` text PRIMARY KEY NOT NULL,
@@ -17,6 +24,7 @@ CREATE TABLE IF NOT EXISTS `contacts` (
 	`linked_ref` text,
 	`created_at` text NOT NULL
 );
+
 CREATE UNIQUE INDEX IF NOT EXISTS `contacts_by_org_channel_handle` ON `contacts` (`org_id`,`channel`,`handle`);
 CREATE TABLE IF NOT EXISTS `conversations` (
 	`id` text PRIMARY KEY NOT NULL,
@@ -30,6 +38,7 @@ CREATE TABLE IF NOT EXISTS `conversations` (
 	`last_message_preview` text DEFAULT '' NOT NULL,
 	`created_at` text NOT NULL
 );
+
 CREATE INDEX IF NOT EXISTS `conversations_by_org_recency` ON `conversations` (`org_id`,`last_message_at`);
 CREATE UNIQUE INDEX IF NOT EXISTS `conversations_by_org_contact` ON `conversations` (`org_id`,`contact_id`);
 CREATE TABLE IF NOT EXISTS `messages` (
@@ -43,14 +52,26 @@ CREATE TABLE IF NOT EXISTS `messages` (
 	`status` text,
 	`error` text,
 	`external_id` text,
+	`media_ref` text,
+	`media_type` text,
 	`template_name` text,
 	`template_language` text,
 	`template_variables` text,
 	`created_at` text NOT NULL
 );
+
 CREATE INDEX IF NOT EXISTS `messages_by_conversation` ON `messages` (`conversation_id`,`created_at`);
 CREATE UNIQUE INDEX IF NOT EXISTS `messages_by_org_external` ON `messages` (`org_id`,`external_id`);
 CREATE INDEX IF NOT EXISTS `messages_by_org_status` ON `messages` (`org_id`,`status`);
+CREATE TABLE IF NOT EXISTS `settings` (
+	`id` text PRIMARY KEY NOT NULL,
+	`org_id` text NOT NULL,
+	`key` text NOT NULL,
+	`value` text NOT NULL,
+	`updated_at` text NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS `settings_by_org_key` ON `settings` (`org_id`,`key`);
 CREATE TABLE IF NOT EXISTS `templates` (
 	`id` text PRIMARY KEY NOT NULL,
 	`org_id` text NOT NULL,
@@ -65,13 +86,6 @@ CREATE TABLE IF NOT EXISTS `templates` (
 	`external_id` text,
 	`synced_at` text NOT NULL
 );
+
 CREATE UNIQUE INDEX IF NOT EXISTS `templates_by_org_channel_name_language` ON `templates` (`org_id`,`channel`,`name`,`language`);
 CREATE INDEX IF NOT EXISTS `templates_by_org_channel` ON `templates` (`org_id`,`channel`,`status`);
-CREATE TABLE IF NOT EXISTS `settings` (
-	`id` text PRIMARY KEY NOT NULL,
-	`org_id` text NOT NULL,
-	`key` text NOT NULL,
-	`value` text NOT NULL,
-	`updated_at` text NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS `settings_by_org_key` ON `settings` (`org_id`,`key`);

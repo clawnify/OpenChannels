@@ -13,16 +13,18 @@ import { Eyebrow } from "./ui";
  * at the provider no matter how healthy the inbox looks, which is invisible
  * from the conversation list. This panel is where that becomes visible.
  */
-export function WhatsAppSetup() {
+export function WhatsAppSetup({ menu }: { menu?: React.ReactNode }) {
   const [phones, setPhones] = useState<Phone[] | null>(null);
+  const [wabaId, setWabaId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [registering, setRegistering] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const { items } = await listPhones();
+      const { items, wabaId } = await listPhones();
       setPhones(items);
+      setWabaId(wabaId);
     } catch (err) {
       setPhones([]);
       setError(err instanceof Error ? err.message : "Could not read the WhatsApp account.");
@@ -35,7 +37,8 @@ export function WhatsAppSetup() {
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-background">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-5">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:px-5">
+        {menu}
         <h1 className="flex-1 text-[1.25rem] font-bold leading-tight tracking-[-0.01em]">
           WhatsApp setup
         </h1>
@@ -50,9 +53,10 @@ export function WhatsAppSetup() {
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-4 md:p-6">
         <div className="mx-auto max-w-3xl">
           <Eyebrow>Sending numbers · {phones?.length ?? 0}</Eyebrow>
+          {wabaId ? <p className="mt-1 text-xs text-muted">WABA ID · {wabaId}</p> : null}
 
           {error ? (
             <p role="alert" className="mt-3 text-[0.8125rem] leading-[1.45] text-danger">

@@ -109,13 +109,13 @@ export const settings = sqliteTable(
 );
 
 /**
- * The channel's message templates, mirrored from the provider.
+ * Approved channel message templates, mirrored in by the agent.
  *
  * WhatsApp Business only lets you open a conversation (or re-engage one whose
  * 24-hour customer service window has lapsed) with a template Meta has
- * approved. This table is a mirror, never the source of truth: the provider
- * owns the catalogue, `POST /api/templates/refresh` re-reads it, and every
- * create/edit/delete is written THERE and re-read from there.
+ * approved. The app never calls Meta — the agent syncs the catalogue in via
+ * POST /api/templates/sync, exactly as it mirrors messages, so switching
+ * provider (Cloud API, Composio, Bird) never touches this app.
  */
 export const templates = sqliteTable(
   "templates",
@@ -178,6 +178,23 @@ export const messages = sqliteTable(
     error: text("error"),
     /** Channel-native message id — makes ingest idempotent. */
     externalId: text("external_id"),
+    /**
+     * A picture, voice note or document that came with this message.
+     *
+     * `mediaRef` is how the channel names the file, and the two shapes differ:
+     * Meta sends `whatsapp-media:<id>`, an id that must be exchanged for a
+     * short-lived download URL, while Bird sends a plain URL. Neither is worth
+     * anything once fetched, so this is a reference to resolve, not a link to
+     * render — the fetched bytes get their own key once storage is on.
+     *
+     * Recorded even before we can fetch, because Meta keeps media for about 30
+     * days: an id we wrote down can still be backfilled, and one we dropped is
+     * gone. This column exists because an ingest that read only `content.text`
+     * kept the caption of an inbound photo and silently lost the photo.
+     */
+    mediaRef: text("media_ref"),
+    /** image | audio | video | document — what the channel said it was. */
+    mediaType: text("media_type"),
     /**
      * Template send (outbound only, null for freeform). The agent MUST send
      * these through the template API with these exact values — `body` holds the
