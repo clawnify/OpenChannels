@@ -12,6 +12,13 @@ type Env = {
   Bindings: {
     DB: D1Database;
     CLAWNIFY_TOKEN?: string;
+    /**
+     * The app's own object storage (R2), provisioned because clawnify.json
+     * declares `app.storage: true`. Optional in the type: an app deployed
+     * before that flag had no bucket, and every media feature degrades to
+     * "keep the reference, show the filename" rather than 500ing.
+     */
+    UPLOADS?: R2Bucket;
     /** Integration-owned WABA configuration, injected at deployment. */
     WHATSAPP_BUSINESS_WABA_ID?: string;
   };
@@ -172,6 +179,12 @@ const MessageSchema = z
     mediaRef: z.string().nullable(),
     /** image | audio | video | document. */
     mediaType: z.string().nullable(),
+    /** Set once the attachment's bytes live in the app's own storage. */
+    mediaKey: z.string().nullable(),
+    /** MIME type of the stored bytes. */
+    mediaMime: z.string().nullable(),
+    /** Original filename the channel supplied, when any. */
+    mediaName: z.string().nullable(),
   })
   .openapi("Message");
 
@@ -187,6 +200,165 @@ const jsonRes = <T extends z.ZodTypeAny>(s: T, description: string) => ({
 });
 
 const preview = (body: string) => body.replace(/\s+/g, " ").trim().slice(0, 140);
+
+/* --------------------------------- media ---------------------------------- */
+
+/**
+ * The storage prefixes this app serves under `/api/media/`. Both are opaque,
+ * unguessable keys (`media/<org>/<messageId>`, `att/<uuid>`), and the serve
+ * route accepts nothing else — the route is public so Meta can fetch outbound
+ * attachment links, which makes the prefix allowlist the only thing between a
+ * brute-forced-looking URL and the rest of the bucket.
+ */
+const MEDIA_PREFIX = /^(media|att)\//;
+
+/** Uploads above this are left with their ref for a manual fetch instead. */
+const MAX_MEDIA_BYTES = 50 * 1024 * 1024;
+
+/** MIME type → the WhatsApp message type a send takes. */
+const mimeToKind = (mime: string | null): "image" | "video" | "audio" | "document" => {
+  if (mime?.startsWith("image/")) return "image";
+  if (mime?.startsWith("video/")) return "video";
+  if (mime?.startsWith("audio/")) return "audio";
+  return "document";
+};
+
+/**
+ * Fetch an inbound attachment's bytes and keep them.
+ *
+ * Two reference shapes arrive (see the ingest media field): Meta's
+ * `whatsapp-media:<id>`, which must be exchanged for a short-lived download
+ * URL, and a plain `https://` link the provider already serves. Returns null
+ * when nothing was stored — storage not on this deployment, a ref shape this
+ * code does not know, or a fetch that failed — and the caller keeps the ref,
+ * which is backfillable while the provider still hosts the file.
+ */
+async function storeMedia(
+  env: Env["Bindings"],
+  org: string,
+  messageId: string,
+  mediaRef: string,
+): Promise<{ key: string; mime: string | null; name: string | null } | null> {
+  if (typeof env.UPLOADS?.put !== "function") return null;
+
+  let url: string | null = null;
+  let mime: string | null = null;
+  let name: string | null = null;
+  let token: string | null = null;
+
+  if (mediaRef.startsWith("whatsapp-media:")) {
+    const id = mediaRef.slice("whatsapp-media:".length).trim();
+    if (!/^\d+$/.test(id)) return null;
+    // Meta describes the media (url, mime_type, filename) and hosts the bytes
+    // behind an Authorization header — the client's raw token is the only way
+    // to follow the URL it hands back.
+    const { client } = whatsappBusiness(env);
+    token = await (client as unknown as { token(): Promise<string | null> }).token();
+    if (!token) return null;
+    const described = await client.get(objectEndpoint(id, "media ID"));
+    const row = unwrapMetaRows(described).rows[0] ?? (described as Record<string, unknown>);
+    const u = row.url;
+    if (typeof u !== "string") return null;
+    url = u;
+    if (typeof row.mime_type === "string") mime = row.mime_type;
+    if (typeof row.filename === "string") name = row.filename;
+  } else if (/^https:\/\//i.test(mediaRef)) {
+    url = mediaRef;
+  } else {
+    return null;
+  }
+
+  const res = await fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
+  if (!res.ok) return null;
+  const bytes = await res.arrayBuffer();
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_MEDIA_BYTES) return null;
+  mime ??= res.headers.get("content-type");
+
+  const key = `media/${org}/${messageId}`;
+  await env.UPLOADS.put(key, bytes, {
+    httpMetadata: mime ? { contentType: mime } : undefined,
+    customMetadata: name ? { name } : undefined,
+  });
+  return { key, mime: mime ?? null, name };
+}
+
+/**
+ * Serve one stored attachment. Public by manifest (`api.public_routes`) because
+ * Meta fetches outbound attachment links from outside the perimeter, and both
+ * prefixes carry unguessable ids — the URL IS the capability, the same posture
+ * as every signed download link. Anything not under an allowed prefix 404s.
+ */
+// Registered outside the OpenAPI builder on purpose: the response is a raw
+// byte stream, not JSON, and the typed-route machinery only speaks JSON.
+api.get("/api/media/:key", async (c) => {
+  const { key } = c.req.param();
+  const env = c.env;
+  if (!MEDIA_PREFIX.test(key) || typeof env.UPLOADS?.get !== "function") {
+    return c.json({ error: "no such attachment" }, 404);
+  }
+  const obj = await env.UPLOADS.get(key);
+  if (!obj) return c.json({ error: "no such attachment" }, 404);
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  const name = obj.customMetadata?.name;
+  if (name) headers.set("Content-Disposition", `attachment; filename="${encodeURIComponent(name)}"`);
+  headers.set("Cache-Control", "private, max-age=31536000, immutable");
+  return new Response(obj.body, { headers, status: 200 });
+});
+
+/**
+ * A human or the composer uploads a file to send later. The key is returned
+ * with a public URL the outbound sender can hand to Meta.
+ */
+api.openapi(
+  createRoute({
+    method: "post",
+    path: "/api/uploads",
+    summary: "Store an attachment to send",
+    description:
+      "Raw binary body (the file itself, not multipart) with the MIME type in Content-Type and an optional ?filename=. Stores it and returns a public URL usable both for display and as the link an outbound attachment is sent by. Empty or oversized bodies are rejected here, not at send time.",
+    request: {
+      query: z.object({ filename: z.string().optional() }),
+      // The body is the file itself — declared unconstrained because OpenAPI
+      // binary bodies are typed as strings otherwise.
+      body: { content: { "*/*": { schema: z.string() } } },
+    },
+    responses: {
+      201: jsonRes(
+        z.object({ key: z.string(), url: z.string(), mime: z.string().nullable() }).openapi("Upload"),
+        "Stored — use url in a reply attachment",
+      ),
+      400: jsonRes(ErrorSchema, "Empty body"),
+      401: jsonRes(ErrorSchema, "No org identity"),
+      413: jsonRes(ErrorSchema, "File too large"),
+      500: jsonRes(ErrorSchema, "Storage is not available on this deployment"),
+    },
+  }),
+  async (c) => {
+    const org = orgId(c);
+    if (!org) return c.json({ error: "unauthorized" }, 401);
+    const env = c.env;
+    if (typeof env.UPLOADS?.put !== "function") {
+      return c.json(
+        { error: "storage is not available on this deployment — redeploy with app.storage enabled" },
+        500,
+      );
+    }
+    const bytes = await c.req.arrayBuffer();
+    if (bytes.byteLength === 0) return c.json({ error: "empty upload" }, 400);
+    if (bytes.byteLength > MAX_MEDIA_BYTES) {
+      return c.json({ error: `files up to ${Math.floor(MAX_MEDIA_BYTES / 1024 / 1024)} MB are accepted` }, 413);
+    }
+    const mime = c.req.header("content-type")?.split(";")[0]?.trim() || null;
+    const key = `att/${crypto.randomUUID()}`;
+    const filename = c.req.valid("query").filename;
+    await env.UPLOADS.put(key, bytes, {
+      httpMetadata: mime ? { contentType: mime } : undefined,
+      customMetadata: filename ? { name: filename } : undefined,
+    });
+    return c.json({ key, url: `${new URL(c.req.url).origin}/api/media/${key}`, mime: mime ?? null }, 201);
+  },
+);
 
 /* ------------------------- the re-engagement window ------------------------ */
 
@@ -517,6 +689,9 @@ const toMessage = (m: typeof schema.messages.$inferSelect) => ({
   // equals the column name is that bug, not data.
   mediaRef: m.mediaRef && m.mediaRef !== "media_ref" ? m.mediaRef : null,
   mediaType: m.mediaType && m.mediaType !== "media_type" ? m.mediaType : null,
+  mediaKey: m.mediaKey && m.mediaKey !== "media_key" ? m.mediaKey : null,
+  mediaMime: m.mediaMime && m.mediaMime !== "media_mime" ? m.mediaMime : null,
+  mediaName: m.mediaName && m.mediaName !== "media_name" ? m.mediaName : null,
 });
 
 const toTemplate = (t: typeof schema.templates.$inferSelect) => ({
@@ -714,6 +889,7 @@ api.openapi(
     }
 
     const inbound = input.message.kind === "inbound";
+    const mediaRef = input.message.media?.ref?.trim() || null;
     const [msg] = await db
       .insert(schema.messages)
       .values({
@@ -724,11 +900,31 @@ api.openapi(
         authorName: input.message.authorName ?? (inbound ? contact.name ?? contact.handle : "Agent"),
         status: inbound ? null : "sent",
         externalId: input.message.externalId ?? null,
-        mediaRef: input.message.media?.ref?.trim() || null,
-        mediaType: (input.message.media?.ref?.trim() && input.message.media?.type?.trim()) || null,
+        mediaRef,
+        mediaType: (mediaRef && input.message.media?.type?.trim()) || null,
         createdAt: at,
       })
       .returning();
+
+    // Keep the attachment's bytes now, while the channel still serves them:
+    // both reference shapes expire, and "we'll fetch it later" loses the file.
+    // Best-effort — a failed fetch leaves mediaRef in place (backfillable) and
+    // the timeline falls back to the filename, which is why the helper never
+    // throws.
+    if (mediaRef) {
+      try {
+        const stored = await storeMedia(c.env, org, msg.id, mediaRef);
+        if (stored) {
+          await db
+            .update(schema.messages)
+            .set({ mediaKey: stored.key, mediaMime: stored.mime, mediaName: stored.name })
+            .where(eq(schema.messages.id, msg.id));
+        }
+      } catch {
+        // Swallowed on purpose: the message arrived; losing its bytes is a
+        // degraded timeline, not a failed ingest.
+      }
+    }
 
     await db
       .update(schema.conversations)
@@ -1308,7 +1504,8 @@ const ComposeSchema = z.object({ body: z.string().min(1) }).openapi("Compose");
 
 const ReplySchema = z
   .object({
-    /** Freeform text. Only accepted while the send window is open. */
+    /** Freeform text. Only accepted while the send window is open. Optional
+     *  when an attachment carries the message. */
     body: z.string().min(1).optional(),
     /** An approved template. Always accepted — this is how a closed thread opens. */
     template: z
@@ -1317,6 +1514,18 @@ const ReplySchema = z
         language: z.string().min(1),
         /** Placeholder token → value, e.g. {"1": "Kara"}. */
         variables: z.record(z.string()).default({}),
+      })
+      .optional(),
+    /**
+     * A file to send with (or instead of) the text — upload it first via
+     * POST /api/uploads and pass back the returned `url`. Media counts as
+     * freeform, so it is subject to the same 24-hour window.
+     */
+    attachment: z
+      .object({
+        url: z.string().min(1),
+        /** image | video | audio | document — defaults from the stored MIME. */
+        type: z.enum(["image", "video", "audio", "document"]).optional(),
       })
       .optional(),
     /** Send from this number instead of the org default (WhatsApp). */
@@ -1330,7 +1539,7 @@ api.openapi(
     path: "/api/conversations/:id/reply",
     summary: "Queue a reply to the contact",
     description:
-      "Sends an outbound message. On channels the app can reach itself (WhatsApp) it goes out immediately and comes back status=sent or status=failed with the provider's reason. On other channels it is written status=queued for the agent to pick up from GET /api/outbox.\n\nSend EITHER `body` (freeform) OR `template`. Freeform is rejected with 409 when the conversation's 24-hour window is shut — on WhatsApp that is the provider's rule, not ours, so a 409 means send a template instead, not retry.",
+      "Sends an outbound message. On channels the app can reach itself (WhatsApp) it goes out immediately and comes back status=sent or status=failed with the provider's reason. On other channels it is written status=queued for the agent to pick up from GET /api/outbox.\n\nSend EITHER `body` (freeform) OR `template`. An `attachment` (a url returned by POST /api/uploads) may ride with freeform text; it counts as freeform and is rejected with 409 when the 24-hour window is shut — on WhatsApp that is the provider's rule, not ours, so a 409 means send a template instead, not retry.",
     request: { params: IdParam, body: jsonBody(ReplySchema) },
     responses: {
       201: jsonRes(MessageSchema, "The queued outbound message"),
@@ -1345,13 +1554,58 @@ api.openapi(
     const conv = await findConversation(c, c.req.valid("param").id);
     if (!conv) return c.json({ error: "not found" }, orgId(c) ? 404 : 401);
     const input = c.req.valid("json");
-    if (!input.body === !input.template) {
+    if (input.template && input.attachment) {
+      return c.json({ error: "an attachment cannot ride a template" }, 400);
+    }
+    // Exactly one of template / (text or attachment). An attachment may ride
+    // with text; it may not replace the template rule.
+    if (!input.attachment && (!input.body === !input.template)) {
       return c.json({ error: "send exactly one of body or template" }, 400);
+    }
+    if (!input.body && !input.attachment) {
+      return c.json({ error: "write a message or attach a file" }, 400);
     }
 
     const u = user(c);
     const db = dbFor(c.env);
     const now = new Date().toISOString();
+
+    // Only this app's own stored files may be attached, and only ones uploaded
+    // through the composer (att/*). Handing Meta an arbitrary URL is a fetch
+    // proxy in disguise; handing it a conversation's stored inbound media is a
+    // privacy leak the URL shape invites by accident.
+    let attachment: Attachment | null = null;
+    if (input.attachment) {
+      let parsed: URL;
+      try {
+        parsed = new URL(input.attachment.url);
+      } catch {
+        return c.json({ error: "attachment.url must be the url returned by POST /api/uploads" }, 400);
+      }
+      const key = parsed.pathname.replace(/^\/api\/media\//, "");
+      if (!parsed.pathname.startsWith("/api/media/") || !/^att\//.test(key)) {
+        return c.json(
+          { error: "attachment.url must be the url returned by POST /api/uploads" },
+          400,
+        );
+      }
+      // The object must actually exist in this deployment's bucket — the app
+      // cannot vouch for a URL whose file it does not hold.
+      const obj = typeof c.env.UPLOADS?.head === "function" ? await c.env.UPLOADS.head(key) : null;
+      if (!obj) {
+        return c.json({ error: "that attachment is not stored here — upload it first" }, 400);
+      }
+      const mime = (obj.httpMetadata?.contentType as string | undefined) ?? null;
+      attachment = {
+        key,
+        url: input.attachment.url,
+        type:
+          input.attachment.type ??
+          mimeToKind(mime),
+        mime,
+        name: obj.customMetadata?.name ?? null,
+      };
+    }
 
     let body: string;
     let templateFields: {
@@ -1395,8 +1649,8 @@ api.openapi(
         templateVariables: JSON.stringify(input.template.variables),
       };
     } else {
-      // Freeform: only inside the window. The channel would reject it otherwise,
-      // so refusing here keeps the failure in the UI instead of the outbox.
+      // Media is freeform — the channel would reject it outside the window
+      // exactly as it rejects freeform text.
       const w = await sendWindow(db, conv);
       if (!w.freeformAllowed) {
         return c.json(
@@ -1409,7 +1663,7 @@ api.openapi(
           409,
         );
       }
-      body = input.body!;
+      body = input.body ?? "";
     }
 
     // Send now when the app can reach the channel; otherwise queue for the
@@ -1436,6 +1690,7 @@ api.openapi(
                 variables: input.template.variables,
               }
             : undefined,
+          attachment,
           // Kept apart on purpose. A number picked in the composer is a human's
           // decision and is honoured as-is; the default is only a fallback, so
           // the sender may prefer a number local to the recipient over it.
@@ -1474,6 +1729,10 @@ api.openapi(
         externalId,
         authorName: u?.name ?? u?.email ?? "Agent",
         userId: u?.id ?? null,
+        mediaKey: attachment?.key ?? null,
+        mediaType: attachment?.type ?? null,
+        mediaMime: attachment?.mime ?? null,
+        mediaName: attachment?.name ?? null,
         ...templateFields,
         createdAt: now,
       })
@@ -1481,7 +1740,11 @@ api.openapi(
 
     await db
       .update(schema.conversations)
-      .set({ lastMessageAt: now, lastMessagePreview: preview(body), unread: 0 })
+      .set({
+        lastMessageAt: now,
+        lastMessagePreview: preview(body || (attachment ? `[${attachment.type}]` : "")),
+        unread: 0,
+      })
       .where(eq(schema.conversations.id, conv.id));
 
     return c.json(toMessage(msg), 201);
@@ -2366,6 +2629,16 @@ const sameCountry = (to: string) => {
     want !== "" && dialCode(phone.displayPhoneNumber) === want;
 };
 
+type Attachment = {
+  /** Storage key under the app's own bucket (always `att/*` when sent). */
+  key: string;
+  /** Public URL Meta fetches the bytes from. */
+  url: string;
+  type: "image" | "video" | "audio" | "document";
+  mime: string | null;
+  name: string | null;
+};
+
 const CHANNEL_SENDERS: Record<
   string,
   (
@@ -2374,6 +2647,7 @@ const CHANNEL_SENDERS: Record<
     message: {
       body: string;
       template?: { name: string; language: string; variables: Record<string, string> };
+      attachment?: Attachment | null;
       /** Explicit sending number — a human chose it. Always honoured. */
       fromPhoneNumberId?: string | null;
       /** The org default, used only when nothing better applies. */
@@ -2423,6 +2697,30 @@ const CHANNEL_SENDERS: Record<
     // Digits only, no '+' — Meta rejects the plus form.
     const toDigits = to.replace(/\D/g, "");
 
+    // Media goes out by public link, not by upload: Meta fetches the URL
+    // itself. body rides along as the caption image/video/document allow.
+    const attachment = message.attachment;
+    const mediaType = attachment?.type;
+    const payload = attachment
+      ? {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: toDigits,
+          type: mediaType,
+          [mediaType ?? "document"]: {
+            link: attachment.url,
+            ...(mediaType === "document" && attachment.name ? { filename: attachment.name } : {}),
+            ...(mediaType !== "audio" && message.body ? { caption: message.body } : {}),
+          },
+        }
+      : {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: toDigits,
+          type: "text",
+          text: { preview_url: false, body: message.body },
+        };
+
     const result = message.template
       ? await client.post(`${objectEndpoint(from.id, "phone number ID")}/messages`, {
           messaging_product: "whatsapp",
@@ -2434,13 +2732,7 @@ const CHANNEL_SENDERS: Record<
             components: templateComponents(message.template.variables),
           },
         })
-      : await client.post(`${objectEndpoint(from.id, "phone number ID")}/messages`, {
-          messaging_product: "whatsapp",
-          recipient_type: "individual",
-          to: toDigits,
-          type: "text",
-          text: { preview_url: false, body: message.body },
-        });
+      : await client.post(`${objectEndpoint(from.id, "phone number ID")}/messages`, payload);
 
     return { externalId: wamidOf(result) };
   },
@@ -2732,7 +3024,7 @@ api.openapi(
     path: "/api/outbox",
     summary: "Queued replies waiting to be sent (agent only)",
     description:
-      "Outbound messages with status=queued, oldest first, with the channel and contact handle to send to. After sending each one through the channel, confirm with POST /api/messages/:id/status.\n\nWhen an item carries `template`, send it through the channel's TEMPLATE API with that exact name/language/variables — do NOT send `message.body` as text. The body is the rendered preview for humans; sending it as freeform is what the template exists to avoid and the provider will reject it outside the 24-hour window.",
+      "Outbound messages with status=queued, oldest first, with the channel and contact handle to send to. After sending each one through the channel, confirm with POST /api/messages/:id/status.\n\nWhen an item carries `template`, send it through the channel's TEMPLATE API with that exact name/language/variables — do NOT send `message.body` as text. The body is the rendered preview for humans; sending it as freeform is what the template exists to avoid and the provider will reject it outside the 24-hour window.\n\nWhen `message.mediaKey` is set the message carries a file: the public URL to send it by is `<app origin>/api/media/<mediaKey>` (it must be sent as a media message, not as text), with `message.mediaType` as the WhatsApp message type and `message.body` as the caption.",
     request: {
       query: z.object({ limit: z.coerce.number().int().min(1).max(50).default(25) }),
     },

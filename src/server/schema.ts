@@ -196,6 +196,20 @@ export const messages = sqliteTable(
     /** image | audio | video | document — what the channel said it was. */
     mediaType: text("media_type"),
     /**
+     * The app's own storage key once the bytes have been fetched and kept.
+     *
+     * `mediaRef` is the channel's reference, and both shapes of it expire —
+     * Meta keeps media for about 30 days, Bird URLs for less. `mediaKey` is
+     * the durable copy under the app's own bucket, and it is what the timeline
+     * renders from. Unset means the attachment has not been (or cannot be)
+     * fetched yet: the ref is still recorded, so a later pass can backfill.
+     */
+    mediaKey: text("media_key"),
+    /** MIME type of the stored bytes, served back as-is on download. */
+    mediaMime: text("media_mime"),
+    /** Original filename when the channel supplied one. */
+    mediaName: text("media_name"),
+    /**
      * Template send (outbound only, null for freeform). The agent MUST send
      * these through the template API with these exact values — `body` holds the
      * rendered text for humans to read, and sending that as freeform would be

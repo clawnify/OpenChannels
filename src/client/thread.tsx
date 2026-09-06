@@ -9,14 +9,60 @@ import {
   RotateCcw,
   StickyNote,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import type { Conversation, Message, Phone } from "./api";
-import { addComment, contactLabel, getMessages, listPhones, patchConversation, sendReply } from "./api";
+import { addComment, contactLabel, getMessages, isImageMime, listPhones, messageMediaSrc, patchConversation, sendReply, uploadAttachment } from "./api";
 import { TemplateComposer } from "./compose";
 import { EmojiPicker } from "./emoji";
 import { Avatar, ChannelChip, channelMeta, timeOfDay } from "./ui";
 
 const POLL_MS = 4000;
+
+/**
+ * The attachment whose bytes we actually hold, rendered as content rather than
+ * a filename: images show inline, everything else downloads on click.
+ *
+ * The src is this app's own media route keyed by the stored attachment id — an
+ * unguessable identifier, the same capability-URL posture as a signed link.
+ */
+function MediaAttachment({
+  mediaKey,
+  mediaMime,
+  mediaType,
+  mediaName,
+}: {
+  mediaKey: string;
+  mediaMime: string | null;
+  mediaType: string | null;
+  mediaName: string | null;
+}) {
+  const src = messageMediaSrc(mediaKey);
+  const alt = mediaName ?? mediaType ?? "attachment";
+  if (isImageMime(mediaMime)) {
+    return (
+      <a href={src} target="_blank" rel="noreferrer" className="block max-w-xs">
+        <img
+          src={src}
+          alt={mediaName ?? alt}
+          loading="lazy"
+          className="max-w-xs rounded-md"
+        />
+      </a>
+    );
+  }
+  return (
+    <a
+      href={src}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1.5 text-[0.8125rem] text-muted underline-offset-2 hover:underline"
+    >
+      <Paperclip className="size-3.5 shrink-0" aria-hidden />
+      {mediaName ?? (mediaType ? `${mediaType} attachment` : "Attachment")}
+    </a>
+  );
+}
 
 function OutboundStatus({ message }: { message: Message }) {
   if (message.status === "queued") {
@@ -119,10 +165,14 @@ function MessageRow({ message }: { message: Message }) {
           {message.body ? (
             <p className="whitespace-pre-wrap text-sm leading-normal text-foreground">{message.body}</p>
           ) : null}
-          {/* The file itself is not stored yet — only the channel's reference to
-              it. Saying so is the point: a caption sitting on its own with no
-              hint that a photo came with it reads as the whole message. */}
-          {message.mediaRef ? (
+          {message.mediaKey ? (
+            <MediaAttachment
+              mediaKey={message.mediaKey}
+              mediaMime={message.mediaMime}
+              mediaType={message.mediaType}
+              mediaName={message.mediaName}
+            />
+          ) : message.mediaRef ? (
             <p
               className={`inline-flex items-center gap-1.5 text-[0.8125rem] text-muted${message.body ? " mt-1.5" : ""}`}
               title={message.mediaRef}
@@ -200,6 +250,9 @@ export function ThreadPane({
   const [messages, setMessages] = useState<Message[] | null>(null);
   const [mode, setMode] = useState<"reply" | "note">("reply");
   const [draft, setDraft] = useState("");
+  /** A file picked in the composer, sent with the reply. Reply-mode only. */
+  const [attached, setAttached] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
@@ -280,12 +333,23 @@ export function ThreadPane({
 
   async function submit() {
     const body = draft.trim();
-    if (!body || sending) return;
+    if ((!body && !attached) || sending) return;
     setSending(true);
     setError(null);
     try {
-      if (mode === "reply") await sendReply(conversation.id, body, fromId ?? undefined);
-      else await addComment(conversation.id, body);
+      if (mode === "reply") {
+        // Upload first, then send: the reply carries the stored URL, so a
+        // failure at either step lands in the same error line — nothing is
+        // queued half-uploaded.
+        const attachment = attached ? await uploadAttachment(attached) : undefined;
+        await sendReply(
+          conversation.id,
+          body,
+          fromId ?? undefined,
+          attachment ? { url: attachment.url } : undefined,
+        );
+        setAttached(null);
+      } else await addComment(conversation.id, body);
       setDraft("");
       stickToBottom.current = true;
       await load();
@@ -451,7 +515,23 @@ export function ThreadPane({
             </div>
           ) : (
             <>
-              <textarea
+              {attached && mode === "reply" ? (
+            <div className="flex items-center justify-between gap-2 border-b border-border bg-sunken px-3 py-1.5">
+              <span className="inline-flex min-w-0 items-center gap-1.5 text-[0.75rem] text-muted">
+                <Paperclip className="size-3.5 shrink-0" aria-hidden />
+                <span className="truncate">{attached.name}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setAttached(null)}
+                aria-label={`Remove ${attached.name}`}
+                className="inline-flex size-5 items-center justify-center rounded-sm text-muted transition-colors duration-150 hover:bg-surface hover:text-foreground"
+              >
+                <X className="size-3.5" aria-hidden />
+              </button>
+            </div>
+          ) : null}
+          <textarea
                 ref={draftRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
@@ -476,12 +556,37 @@ export function ThreadPane({
                 </p>
               ) : null}
               <div className="flex items-center justify-between px-3 pb-2.5">
+                <div className="flex items-center gap-1.5">
+                {/* Attach is a reply-mode affordance: notes are internal, and
+                    the template path has no attachment field. */}
+                {mode === "reply" && !templateOnly ? (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      onChange={(e) => {
+                        setAttached(e.target.files?.[0] ?? null);
+                        e.target.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      aria-label="Attach a file"
+                      className="inline-flex size-8 items-center justify-center rounded-sm text-muted transition-colors duration-150 hover:bg-sunken hover:text-foreground"
+                    >
+                      <Paperclip className="size-4" aria-hidden />
+                    </button>
+                  </>
+                ) : null}
                 <EmojiPicker onPick={insertEmoji} />
-                {mode === "reply" ? (
+              </div>
+              {mode === "reply" ? (
                   <button
                     type="button"
                     onClick={submit}
-                    disabled={sending || draft.trim() === ""}
+                    disabled={sending || (draft.trim() === "" && !attached)}
                     aria-label="Queue reply for sending"
                     className="inline-flex h-8 items-center gap-x-1.5 rounded-sm bg-primary px-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:bg-primary-hover disabled:opacity-50"
                   >

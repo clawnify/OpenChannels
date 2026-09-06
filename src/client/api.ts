@@ -71,7 +71,17 @@ export interface Message {
   templateName: string | null;
   mediaRef: string | null;
   mediaType: string | null;
+  /** Set once the attachment's bytes live in the app's own storage. */
+  mediaKey: string | null;
+  mediaMime: string | null;
+  mediaName: string | null;
 }
+
+/** How a message's attachment should show in the timeline. */
+export const messageMediaSrc = (key: string): string => `/api/media/${key}`;
+
+/** True when the stored bytes are renderable inline (an <img> can show them). */
+export const isImageMime = (mime: string | null): boolean => !!mime?.startsWith("image/");
 
 export interface Template {
   id: string;
@@ -153,11 +163,43 @@ export const sendReply = (
   conversationId: string,
   body: string,
   fromPhoneNumberId?: string,
+  attachment?: { url: string },
 ): Promise<Message> =>
   request(`/api/conversations/${conversationId}/reply`, {
     method: "POST",
-    body: JSON.stringify({ body, fromPhoneNumberId }),
+    body: JSON.stringify({
+      // An attachment-only reply has no text; sending an empty body would
+      // fail validation, so it is omitted rather than zero-length.
+      ...(body ? { body } : {}),
+      fromPhoneNumberId,
+      ...(attachment ? { attachment } : {}),
+    }),
   });
+
+/**
+ * Upload a file to attach to a reply. Raw binary body, filename in the query
+ * string; returns the public URL to pass back as `attachment.url`.
+ */
+export const uploadAttachment = async (
+  file: File,
+): Promise<{ key: string; url: string; mime: string | null }> => {
+  const res = await fetch(`/api/uploads?filename=${encodeURIComponent(file.name)}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!res.ok) {
+    let message = `POST /api/uploads → ${res.status}`;
+    try {
+      const parsed = (await res.json()) as { error?: string };
+      if (parsed?.error) message = parsed.error;
+    } catch {
+      /* keep the status line */
+    }
+    throw new ApiError(res.status, message);
+  }
+  return res.json() as Promise<{ key: string; url: string; mime: string | null }>;
+};
 
 /** An approved template — always accepted, and the only way to re-open a thread. */
 export const sendTemplate = (

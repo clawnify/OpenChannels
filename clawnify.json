@@ -7,7 +7,10 @@
   "app": {
     "framework": "react+hono",
     "database": true,
-    "storage": false,
+    "storage": true,
     "credentials": ["whatsapp"]
+  },
+  "api": {
+    "public_routes": ["/api/media/*"]
   }
 }
