@@ -36,10 +36,13 @@ CREATE TABLE IF NOT EXISTS `conversations` (
 	`unread` integer DEFAULT 0 NOT NULL,
 	`last_message_at` text NOT NULL,
 	`last_message_preview` text DEFAULT '' NOT NULL,
+	`assignee_id` text,
+	`assignee_name` text,
 	`created_at` text NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS `conversations_by_org_recency` ON `conversations` (`org_id`,`last_message_at`);
+CREATE INDEX IF NOT EXISTS `conversations_by_org_assignee` ON `conversations` (`org_id`,`assignee_id`);
 CREATE UNIQUE INDEX IF NOT EXISTS `conversations_by_org_contact` ON `conversations` (`org_id`,`contact_id`);
 CREATE TABLE IF NOT EXISTS `messages` (
 	`id` text PRIMARY KEY NOT NULL,

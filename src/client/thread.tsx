@@ -4,11 +4,13 @@ import {
   Bot,
   CheckCheck,
   ChevronLeft,
+  CircleSlash,
   FileText,
   Paperclip,
   RotateCcw,
   StickyNote,
   TriangleAlert,
+  UserCheck,
   X,
 } from "lucide-react";
 import type { Conversation, Message, Phone } from "./api";
@@ -254,6 +256,7 @@ export function ThreadPane({
   const [attached, setAttached] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sending, setSending] = useState(false);
+  const [assigning, setAssigning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
 
@@ -377,6 +380,19 @@ export function ThreadPane({
     onConversationChanged();
   }
 
+  /** Assign the thread to the signed-in user, or clear the assignment. */
+  async function toggleAssign() {
+    setAssigning(true);
+    try {
+      await patchConversation(conversation.id, {
+        assignee: conversation.assignee ? null : "me",
+      });
+      onConversationChanged();
+    } finally {
+      setAssigning(false);
+    }
+  }
+
   const contact = conversation.contact;
   const closed = conversation.status === "closed";
   const channelLabel = channelMeta(conversation.channel).label;
@@ -416,6 +432,30 @@ export function ThreadPane({
             {conversation.subject ? ` · ${conversation.subject}` : ""}
           </p>
         </div>
+        {conversation.assignee ? (
+          <span
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-sunken px-2 py-0.5 text-xs text-muted"
+            title={`Assigned to ${conversation.assignee.name ?? conversation.assignee.id}`}
+          >
+            <UserCheck className="size-3" aria-hidden />
+            {conversation.assignee.name ?? conversation.assignee.id.slice(0, 8)}
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={toggleAssign}
+          disabled={assigning}
+          aria-label={conversation.assignee ? "Unassign this conversation" : "Assign this conversation to me"}
+          title={conversation.assignee ? "Unassign" : "Assign to me"}
+          className="inline-flex h-8 shrink-0 items-center gap-x-1.5 rounded-sm border border-border bg-surface px-2 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sunken disabled:opacity-50"
+        >
+          {conversation.assignee ? (
+            <CircleSlash className="size-4" aria-hidden />
+          ) : (
+            <UserCheck className="size-4" aria-hidden />
+          )}
+          {conversation.assignee ? "Unassign" : "Take"}
+        </button>
         <button
           type="button"
           onClick={toggleStatus}

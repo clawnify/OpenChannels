@@ -56,6 +56,10 @@ export interface Conversation {
   lastMessageAt: string;
   lastMessagePreview: string;
   contact: Contact;
+  /** The dashboard user who owns the thread; null means unassigned. */
+  assignee: { id: string; name: string | null } | null;
+  /** Last message is older than the server's stale horizon. */
+  stale: boolean;
   window: SendWindow;
 }
 
@@ -103,7 +107,20 @@ export interface Stats {
   totalOpen: number;
   totalUnread: number;
   queued: number;
+  mine: number;
+  unassigned: number;
   channels: { channel: string; open: number }[];
+}
+
+/** One message found by history search, with the thread to jump into. */
+export interface SearchHit {
+  messageId: string;
+  conversationId: string;
+  kind: string;
+  body: string;
+  authorName: string | null;
+  createdAt: string;
+  contact: Contact;
 }
 
 /** Carries the server's own message so the composer can show it verbatim. */
@@ -140,6 +157,7 @@ export function listConversations(params: {
   channel?: string;
   status?: string;
   search?: string;
+  assignee?: "me" | "unassigned";
   limit?: number;
   offset?: number;
 }): Promise<{ items: Conversation[]; total: number }> {
@@ -342,9 +360,13 @@ export const getConversation = (conversationId: string): Promise<Conversation> =
 
 export const patchConversation = (
   conversationId: string,
-  patch: { status?: "open" | "closed"; unread?: 0 },
+  patch: { status?: "open" | "closed"; unread?: 0; assignee?: "me" | null },
 ): Promise<{ ok: boolean }> =>
   request(`/api/conversations/${conversationId}`, {
     method: "PATCH",
     body: JSON.stringify(patch),
   });
+
+/** Substring search over every message body in the org, newest first. */
+export const searchMessages = (q: string, limit = 20): Promise<{ items: SearchHit[] }> =>
+  request(`/api/search?q=${encodeURIComponent(q)}&limit=${limit}`);

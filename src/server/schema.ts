@@ -77,10 +77,19 @@ export const conversations = sqliteTable(
     unread: integer("unread").notNull().default(0),
     lastMessageAt: text("last_message_at").notNull().$default(() => new Date().toISOString()),
     lastMessagePreview: text("last_message_preview").notNull().default(""),
+    /**
+     * The dashboard user who owns this thread, so a shared inbox doesn't drop
+     * balls. `assigneeName` is a display snapshot — names change in Supabase
+     * and there is no live "user" table here to resolve against — while
+     * `assigneeId` stays the stable identity for "mine" filters.
+     */
+    assigneeId: text("assignee_id"),
+    assigneeName: text("assignee_name"),
     createdAt: text("created_at").notNull().$default(() => new Date().toISOString()),
   },
   (t) => ({
     byOrgRecency: index("conversations_by_org_recency").on(t.orgId, t.lastMessageAt),
+    byOrgAssignee: index("conversations_by_org_assignee").on(t.orgId, t.assigneeId),
     byOrgContact: uniqueIndex("conversations_by_org_contact").on(t.orgId, t.contactId),
   }),
 );

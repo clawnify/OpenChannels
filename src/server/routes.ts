@@ -1,6 +1,6 @@
 import { OpenAPIHono, createRoute, z, user, orgId, caller } from "@clawnify/app";
 import { connect } from "@clawnify/connections";
-import { getDB, and, or, eq, desc, asc, lt, like, count, sql, inArray } from "@clawnify/db";
+import { getDB, and, or, eq, desc, asc, lt, like, count, sql, inArray, isNull } from "@clawnify/db";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "./schema";
 
@@ -140,6 +140,13 @@ const ConversationSchema = z
      * failure from three weeks ago buries today's live conversations.
      */
     undelivered: z.boolean(),
+    /** The dashboard user who owns the thread; null means unassigned. */
+    assignee: z
+      .object({ id: z.string(), name: z.string().nullable() })
+      .nullable()
+      .openapi("Assignee"),
+    /** True when the thread's last message is older than the stale horizon. */
+    stale: z.boolean(),
     /** What this thread accepts right now — freeform, or template-only. */
     window: SendWindowSchema,
   })
@@ -655,6 +662,12 @@ const toContact = (contact: typeof schema.contacts.$inferSelect) => ({
     : null,
 });
 
+/**
+ * A thread that has not moved in this long is flagged stale in the list. Not a
+ * deadline the server enforces — a nudge rendered where a human decides.
+ */
+const STALE_MS = 24 * 60 * 60 * 1000;
+
 const toConversation = (
   conv: typeof schema.conversations.$inferSelect,
   contact: typeof schema.contacts.$inferSelect,
@@ -670,6 +683,11 @@ const toConversation = (
   lastMessagePreview: conv.lastMessagePreview,
   contact: toContact(contact),
   undelivered,
+  assignee:
+    conv.assigneeId && conv.assigneeId !== "assignee_id"
+      ? { id: conv.assigneeId, name: conv.assigneeName }
+      : null,
+  stale: Date.now() - new Date(conv.lastMessageAt).getTime() > STALE_MS,
   window,
 });
 
@@ -964,6 +982,8 @@ api.openapi(
         channel: z.enum(CHANNELS).optional(),
         status: z.enum(["open", "closed", "all"]).default("open"),
         search: z.string().optional(),
+        /** "me" → assigned to the caller; "unassigned" → nobody owns it. */
+        assignee: z.enum(["me", "unassigned"]).optional(),
         limit: z.coerce.number().int().min(1).max(100).default(25),
         offset: z.coerce.number().int().min(0).default(0),
       }),
@@ -985,6 +1005,13 @@ api.openapi(
     const filters = [eq(schema.conversations.orgId, org)];
     if (q.channel) filters.push(eq(schema.conversations.channel, q.channel));
     if (q.status !== "all") filters.push(eq(schema.conversations.status, q.status));
+    if (q.assignee === "me") {
+      const u = user(c);
+      if (!u) return c.json({ error: "no identity — cannot filter by assignee" }, 401);
+      filters.push(eq(schema.conversations.assigneeId, u.id));
+    } else if (q.assignee === "unassigned") {
+      filters.push(isNull(schema.conversations.assigneeId));
+    }
     if (q.search) {
       const term = `%${q.search}%`;
       filters.push(
@@ -1037,6 +1064,88 @@ api.openapi(
           toConversation(r.conv, r.contact, windows.get(r.conv.id) ?? OPEN_WINDOW, r.undelivered === 1),
         ),
         total,
+      },
+      200,
+    );
+  },
+);
+
+api.openapi(
+  createRoute({
+    method: "get",
+    path: "/api/search",
+    summary: "Full-history search across every thread",
+    description:
+      "Substring match (case-insensitive, LIKE with escaped wildcards) over the bodies of real messages — inbound, outbound and internal notes — in the org. Returns the matching messages with enough conversation context to jump into the thread. Ordered newest first.",
+    request: {
+      query: z.object({
+        q: z.string().min(1),
+        limit: z.coerce.number().int().min(1).max(50).default(20),
+      }),
+    },
+    responses: {
+      200: jsonRes(
+        z
+          .object({
+            items: z.array(
+              z
+                .object({
+                  messageId: z.string(),
+                  conversationId: z.string(),
+                  kind: z.string(),
+                  body: z.string(),
+                  authorName: z.string().nullable(),
+                  createdAt: z.string(),
+                  contact: ContactSchema,
+                })
+                .openapi("SearchHit"),
+            ),
+          })
+          .openapi("SearchResult"),
+        "Messages matching the query",
+      ),
+      401: jsonRes(ErrorSchema, "No org identity"),
+    },
+  }),
+  async (c) => {
+    const org = orgId(c);
+    if (!org) return c.json({ error: "unauthorized" }, 401);
+    const { q, limit } = c.req.valid("query");
+
+    // Escape LIKE's own wildcards so a search for "50%off" finds "50% off",
+    // not "50x off" — and declare ESCAPE so the backslash means that.
+    const term = "%" + q.replace(/[\\%_]/g, (ch) => `\\${ch}`) + "%";
+    const rows = await dbFor(c.env)
+      .select({ msg: schema.messages, contact: schema.contacts })
+      .from(schema.messages)
+      .innerJoin(
+        schema.conversations,
+        and(
+          eq(schema.messages.conversationId, schema.conversations.id),
+          eq(schema.conversations.orgId, org),
+        ),
+      )
+      .innerJoin(schema.contacts, eq(schema.conversations.contactId, schema.contacts.id))
+      .where(
+        and(
+          inArray(schema.messages.kind, ["inbound", "outbound", "comment"]),
+          sql`lower(${schema.messages.body}) LIKE lower(${term}) ESCAPE '\\'`,
+        ),
+      )
+      .orderBy(desc(schema.messages.createdAt))
+      .limit(limit);
+
+    return c.json(
+      {
+        items: rows.map((r) => ({
+          messageId: r.msg.id,
+          conversationId: r.msg.conversationId,
+          kind: r.msg.kind,
+          body: r.msg.body,
+          authorName: r.msg.authorName,
+          createdAt: r.msg.createdAt,
+          contact: toContact(r.contact),
+        })),
       },
       200,
     );
@@ -1374,7 +1483,7 @@ api.openapi(
     method: "get",
     path: "/api/stats",
     summary: "Inbox counts for the sidebar",
-    description: "Open/unread totals, per-channel open counts, and the queued-outbound count.",
+    description: "Open/unread totals, per-channel open counts, the queued-outbound count, and mine/unassigned ownership counts.",
     responses: {
       200: jsonRes(
         z
@@ -1382,6 +1491,9 @@ api.openapi(
             totalOpen: z.number(),
             totalUnread: z.number(),
             queued: z.number(),
+            /** Open threads assigned to the caller; -1 when identity is absent. */
+            mine: z.number(),
+            unassigned: z.number(),
             channels: z.array(z.object({ channel: z.string(), open: z.number() })),
           })
           .openapi("Stats"),
@@ -1396,7 +1508,8 @@ api.openapi(
     const db = dbFor(c.env);
 
     const open = and(eq(schema.conversations.orgId, org), eq(schema.conversations.status, "open"));
-    const [channels, [totals], [queued]] = await Promise.all([
+    const me = user(c);
+    const [channels, [totals], [queued], [mineRow], [unassignedRow]] = await Promise.all([
       db
         .select({ channel: schema.conversations.channel, open: count() })
         .from(schema.conversations)
@@ -1413,6 +1526,14 @@ api.openapi(
         .select({ queued: count() })
         .from(schema.messages)
         .where(and(eq(schema.messages.orgId, org), eq(schema.messages.status, "queued"))),
+      db
+        .select({ mine: count() })
+        .from(schema.conversations)
+        .where(me ? and(open, eq(schema.conversations.assigneeId, me.id)) : and(open, isNull(schema.conversations.id))),
+      db
+        .select({ unassigned: count() })
+        .from(schema.conversations)
+        .where(and(open, isNull(schema.conversations.assigneeId))),
     ]);
 
     return c.json(
@@ -1420,6 +1541,8 @@ api.openapi(
         totalOpen: totals.totalOpen,
         totalUnread: Number(totals.totalUnread),
         queued: queued.queued,
+        mine: me ? mineRow.mine : 0,
+        unassigned: unassignedRow.unassigned,
         channels,
       },
       200,
@@ -1824,12 +1947,17 @@ api.openapi(
     method: "patch",
     path: "/api/conversations/:id",
     summary: "Update conversation state",
-    description: "Close/reopen the thread or clear its unread flag.",
+    description: "Close/reopen the thread, clear its unread flag, or assign it to the caller (or clear the assignment).",
     request: {
       params: IdParam,
       body: jsonBody(
         z
-          .object({ status: z.enum(["open", "closed"]).optional(), unread: z.literal(0).optional() })
+          .object({
+            status: z.enum(["open", "closed"]).optional(),
+            unread: z.literal(0).optional(),
+            /** "me" assigns the thread to the calling user; null clears it. */
+            assignee: z.union([z.literal("me"), z.null()]).optional(),
+          })
           .openapi("ConversationPatch"),
       ),
     },
@@ -1847,6 +1975,17 @@ api.openapi(
     const patch: Partial<typeof schema.conversations.$inferInsert> = {};
     if (body.status !== undefined) patch.status = body.status;
     if (body.unread !== undefined) patch.unread = body.unread;
+    if (body.assignee !== undefined) {
+      if (body.assignee === "me") {
+        const u = user(c);
+        if (!u) return c.json({ error: "no identity — cannot assign" }, 401);
+        patch.assigneeId = u.id;
+        patch.assigneeName = u.name;
+      } else {
+        patch.assigneeId = null;
+        patch.assigneeName = null;
+      }
+    }
     if (Object.keys(patch).length === 0) return c.json({ error: "empty patch" }, 400);
     const db = dbFor(c.env);
     await db.update(schema.conversations).set(patch).where(eq(schema.conversations.id, conv.id));
