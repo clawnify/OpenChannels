@@ -2,116 +2,184 @@
 
 /*
  * Clawnify Apps design tokens (apps/api/src/instructions/apps/DESIGN.md).
- * Light values on :root, dark under prefers-color-scheme; @theme inline maps
- * them to Tailwind utilities (bg-surface, text-muted, border-border, …).
- * No component ever hardcodes a hex — rebrand by overriding these vars.
+ *
+ * Every chromatic value is oklch(L, C% of the sRGB gamut maximum at that L and
+ * hue, H): L and C come from the ROLE (tint / text / solid), only the hue comes
+ * from the MEANING. That is what makes a rebrand one line and every pair
+ * contrast-verified upstream. Hex is the spec's own tooling value; the oklch
+ * source is in the comment beside it.
+ *
+ * The names are unprefixed on purpose: <AppNav> from @clawnify/app/client reads
+ * --surface, --sunken, --border, --foreground, --muted, --primary and --ring
+ * off the page, so a prefixed set would leave the sidebar painted in the SDK's
+ * fallbacks instead of this app's palette.
  */
 :root {
-  --oc-background: #ffffff;
-  --oc-surface: #ffffff;
-  --oc-sunken: #f1f5f9;
-  --oc-foreground: #1a202c;
-  --oc-muted: #475569;
-  --oc-faint: #94a3b8;
-  --oc-border: #e2e8f0;
-  --oc-ring: #2563eb;
-  --oc-link: #2563eb;
-  --oc-primary: #dd5164;
-  --oc-primary-hover: #c53a4e;
-  --oc-on-primary: #ffffff;
-  --oc-success: #047857;
-  --oc-success-tint: #ecfdf5;
-  --oc-warning: #b45309;
-  --oc-warning-tint: #fffbeb;
-  --oc-danger: #b91c1c;
-  --oc-danger-hover: #991b1b;
-  --oc-danger-tint: #fef2f2;
+  /* ── Surfaces (warm neutral, hue 85 — never blue-gray) ── */
+  --background: #ffffff;      /* oklch(1 0 0) */
+  --surface: #ffffff;         /* cards and panes: the BORDER separates them, not a tone */
+  --sunken: #f7f7f5;          /* oklch(0.975 0.002 85): sidebar, hover rows, chips — a 2.5% step */
+  /* ── Text ── */
+  --foreground: #1b1a19;      /* oklch(0.22 0.002 85) */
+  --muted: #646360;           /* oklch(0.5 0.005 85) */
+  --faint: #9a9893;           /* oklch(0.68 0.007 85): placeholders and disabled only */
+  /* ── Lines ── */
+  --border: #e5e3de;          /* oklch(0.915 0.007 85) */
+  --ring: #df3656;            /* focus ring = accent-solid */
+  --link: #1b1a19;
+  /* ── Action: the one solid button per screen is INK, not the accent ── */
+  --primary: #1b1a19;
+  --primary-hover: #333130;
+  --on-primary: #ffffff;
+  /* ── Accent: the app's hue. App icon, focus ring, count badge — nothing else ── */
+  --accent: #df3656;
+  --accent-hover: #bd2c47;
+  --accent-tint: #f9eded;
+  --accent-text: #892f3b;
+  --on-accent: #ffffff;
+  /* ── Status: hue only differs; L and C% are shared across all four ── */
+  --info: #173ec4;
+  --info-tint: #ecf0f9;
+  --info-solid: #4977ed;
+  --success: #2b5f3c;
+  --success-tint: #dbf9e2;
+  --success-solid: #319656;
+  --warning: #664e27;
+  --warning-tint: #f9efdf;
+  --warning-solid: #a3772b;
+  --danger: #8a2f2d;
+  --danger-tint: #f9edec;
+  --danger-solid: #e1363a;
+
+  /* Three edge recipes, and the difference between resting and floating is
+     WHICH recipe — never shadow-versus-border. Resting is an INSET ring: it
+     costs no layout, so a focus state thickens it without moving a pixel, and
+     the radius stays exactly what was asked for. */
+  --edge-rest: inset 0 0 0 1px var(--border);
+  --edge-raised: 0 0 2px rgba(28, 40, 64, 0.18), 0 1px 3px rgba(0, 0, 0, 0.04);
+  --edge-float: 0 0 0 1px rgba(28, 40, 64, 0.04), 0 4px 8px -4px rgba(28, 40, 64, 0.12),
+    0 4px 12px -2px rgba(24, 41, 75, 0.16);
+  --edge-solid: inset 0 0 0 1px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(20, 20, 20, 0.12);
 }
 
+/* Same hues, re-tuned L and C% — a mirror of the light ramp reads muddy. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --oc-background: #0d1117;
-    --oc-surface: #161b22;
-    --oc-sunken: #1c2128;
-    --oc-foreground: #e6edf3;
-    --oc-muted: #9ba7b3;
-    --oc-faint: #6e7681;
-    --oc-border: #30363d;
-    --oc-ring: #4493f8;
-    --oc-link: #4493f8;
-    --oc-primary: #dd5164;
-    --oc-primary-hover: #c53a4e;
-    --oc-on-primary: #ffffff;
-    --oc-success: #3fb950;
-    --oc-success-tint: #12261e;
-    --oc-warning: #d29922;
-    --oc-warning-tint: #2a2210;
-    --oc-danger: #f85149;
-    --oc-danger-hover: #ff6a60;
-    --oc-danger-tint: #2d1518;
+    --background: #100f0e;
+    --surface: #161615;
+    --sunken: #222120;
+    --foreground: #efeeed;
+    --muted: #c0bdb9;
+    --faint: #82807c;
+    --border: #2e2e2c;
+    --ring: #e4415d;
+    --link: #efeeed;
+    --primary: #efeeed;       /* the solid ink button inverts to a light one */
+    --primary-hover: #d6d4d1;
+    --on-primary: #100f0e;
+    --accent: #e4415d;
+    --accent-hover: #ef7d87;
+    --accent-tint: #3b1c1e;
+    --accent-text: #e6b6b8;
+    --on-accent: #ffffff;
+    --info: #b5c4e5;
+    --info-tint: #12234f;
+    --info-solid: #5580e8;
+    --success: #86da9e;
+    --success-tint: #1a2b1f;
+    --success-solid: #3c9c5d;
+    --warning: #e5bd7e;
+    --warning-tint: #2d2518;
+    --warning-solid: #a87e35;
+    --danger: #e6b7b2;
+    --danger-tint: #3b1c1a;
+    --danger-solid: #e64243;
+    /* In dark the drops disappear and the ring carries every level. */
+    --edge-raised: inset 0 0 0 1px var(--border);
+    --edge-float: inset 0 0 0 1px var(--border);
+    --edge-solid: none;
   }
 }
 
 @theme inline {
-  --color-background: var(--oc-background);
-  --color-surface: var(--oc-surface);
-  --color-sunken: var(--oc-sunken);
-  --color-foreground: var(--oc-foreground);
-  --color-muted: var(--oc-muted);
-  --color-faint: var(--oc-faint);
-  --color-border: var(--oc-border);
-  --color-ring: var(--oc-ring);
-  --color-link: var(--oc-link);
-  --color-primary: var(--oc-primary);
-  --color-primary-hover: var(--oc-primary-hover);
-  --color-on-primary: var(--oc-on-primary);
-  --color-success: var(--oc-success);
-  --color-success-tint: var(--oc-success-tint);
-  --color-warning: var(--oc-warning);
-  --color-warning-tint: var(--oc-warning-tint);
-  --color-danger: var(--oc-danger);
-  --color-danger-hover: var(--oc-danger-hover);
-  --color-danger-tint: var(--oc-danger-tint);
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-link: var(--link);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-on-primary: var(--on-primary);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-tint: var(--accent-tint);
+  --color-accent-text: var(--accent-text);
+  --color-on-accent: var(--on-accent);
+  --color-info: var(--info);
+  --color-info-tint: var(--info-tint);
+  --color-info-solid: var(--info-solid);
+  --color-success: var(--success);
+  --color-success-tint: var(--success-tint);
+  --color-success-solid: var(--success-solid);
+  --color-warning: var(--warning);
+  --color-warning-tint: var(--warning-tint);
+  --color-warning-solid: var(--warning-solid);
+  --color-danger: var(--danger);
+  --color-danger-tint: var(--danger-tint);
+  --color-danger-solid: var(--danger-solid);
 
-  /* Four explicit radius steps — never shadcn's single derived --radius. */
-  --radius-sm: 0.25rem;
-  --radius-md: 0.375rem;
-  --radius-lg: 0.5rem;
-  --radius-xl: 0.75rem;
+  /* Four explicit radius steps — never shadcn's single derived --radius.
+     Nested corners stay concentric: outer = inner + padding. */
+  --radius-xs: 0.25rem;  /* 4px:  chips */
+  --radius-sm: 0.5rem;   /* 8px:  buttons, inputs, hover rows */
+  --radius-md: 0.75rem;  /* 12px: cards, tiles, popovers */
+  --radius-lg: 1rem;     /* 16px: modals */
+  --radius-xl: 1.5rem;   /* 24px: trays */
+
+  /* Utility names for the three edge recipes: shadow-edge / -raised / -float. */
+  --shadow-edge: var(--edge-rest);
+  --shadow-raised: var(--edge-raised);
+  --shadow-float: var(--edge-float);
 
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 /*
- * Channel identity colors — data colors (category palette), not chrome.
+ * Channel identity colors — data colours (the category palette), not chrome.
  * A channel element gets `ch-<channel>` plus .channel-dot / .channel-chip,
- * which read the hue from --ch; tints derive via color-mix so dark mode
- * never ships light pastel fills.
+ * which read the hue from --ch. A third-party brand hue is tint strength only:
+ * a light fill, the hue as a 1px ring, the hue as text. A solid saturated brand
+ * fill would import another company's saturation onto our surface, and at six
+ * channels the page reads as a paint chart rather than one product.
  */
 :root {
-  --oc-ch-whatsapp: #059669;
-  --oc-ch-telegram: #2563eb;
-  --oc-ch-slack: #7c3aed;
-  --oc-ch-email: #ea580c;
-  --oc-ch-sms: #0d9488;
-  --oc-ch-other: #64748b;
+  --ch-whatsapp: #059669;
+  --ch-telegram: #2563eb;
+  --ch-slack: #7c3aed;
+  --ch-email: #ea580c;
+  --ch-sms: #0d9488;
+  --ch-other: #64748b;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --oc-ch-whatsapp: #34d399;
-    --oc-ch-telegram: #60a5fa;
-    --oc-ch-slack: #a78bfa;
-    --oc-ch-email: #fb923c;
-    --oc-ch-sms: #2dd4bf;
-    --oc-ch-other: #94a3b8;
+    --ch-whatsapp: #34d399;
+    --ch-telegram: #60a5fa;
+    --ch-slack: #a78bfa;
+    --ch-email: #fb923c;
+    --ch-sms: #2dd4bf;
+    --ch-other: #94a3b8;
   }
 }
-.ch-whatsapp { --ch: var(--oc-ch-whatsapp); }
-.ch-telegram { --ch: var(--oc-ch-telegram); }
-.ch-slack { --ch: var(--oc-ch-slack); }
-.ch-email { --ch: var(--oc-ch-email); }
-.ch-sms { --ch: var(--oc-ch-sms); }
-.ch-other { --ch: var(--oc-ch-other); }
+.ch-whatsapp { --ch: var(--ch-whatsapp); }
+.ch-telegram { --ch: var(--ch-telegram); }
+.ch-slack { --ch: var(--ch-slack); }
+.ch-email { --ch: var(--ch-email); }
+.ch-sms { --ch: var(--ch-sms); }
+.ch-other { --ch: var(--ch-other); }
 
 .channel-dot {
   background: var(--ch);
@@ -119,14 +187,82 @@
 .channel-chip {
   color: var(--ch);
   background: color-mix(in srgb, var(--ch) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ch) 28%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ch) 28%, transparent);
 }
 
-/* Agent mode (?agent / mode=agent sets data-agent on <html>): larger targets. */
+/*
+ * Recipes, in the components layer so a utility on the element (w-full, h-auto)
+ * still wins. No component file carries a raw value — that rule is what makes
+ * one-file rebranding work.
+ */
+@layer components {
+  /* Numbers are instrumentation: tabular figures so digits and totals stack. */
+  .data { font-variant-numeric: tabular-nums; }
+
+  /* 13px sentence case, muted. NOT uppercase: the 11px tracked micro style
+     exists for exactly one job, the label above a KPI number. An interface
+     covered in small caps reads as a control panel. */
+  .section-label {
+    @apply text-[0.8125rem] font-medium leading-tight text-muted;
+  }
+
+  /* The edge is an inset ring, never a painted border. */
+  .card { @apply rounded-md bg-surface; box-shadow: var(--edge-rest); }
+
+  .input {
+    @apply h-8 w-full rounded-sm bg-surface px-3 text-[0.9375rem] text-foreground outline-none
+      transition-shadow duration-150 placeholder:text-faint;
+    box-shadow: var(--edge-rest);
+  }
+  .input:focus { box-shadow: inset 0 0 0 1px var(--ring), 0 0 0 3px var(--accent-tint); }
+  textarea.input { @apply h-auto py-2 leading-relaxed; }
+
+  /* 28px, 8px radius, 15px/500 — not a pill: a full-round button reads
+     consumer, an 8px corner reads tool. One ink action per screen. */
+  .btn {
+    @apply inline-flex h-7 shrink-0 items-center justify-center gap-x-1.5 whitespace-nowrap
+      rounded-sm px-2 text-sm font-medium transition-colors duration-150
+      disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary { @apply bg-primary text-on-primary hover:bg-primary-hover; box-shadow: var(--edge-solid); }
+  /* White, and the edge is a SHADOW RING rather than a border — it reads
+     crisper than a 1px line at 28px. */
+  .btn-secondary { @apply bg-surface text-foreground hover:bg-sunken; box-shadow: var(--edge-raised); }
+  .btn-ghost { @apply text-muted hover:bg-sunken hover:text-foreground; }
+  .btn-danger { @apply bg-danger-tint text-danger hover:bg-danger-solid hover:text-white; }
+
+  /* A chip is a fact (plan, type, language); a badge is a signal (approved,
+     failed, queued). Neither is bold, and neither carries a border. */
+  .chip {
+    @apply inline-flex shrink-0 items-center gap-1 rounded-xs bg-sunken px-2 py-0.5 text-xs text-muted;
+  }
+  .badge {
+    @apply inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .badge-info { @apply bg-info-tint text-info; }
+  .badge-success { @apply bg-success-tint text-success; }
+  .badge-warning { @apply bg-warning-tint text-warning; }
+  .badge-danger { @apply bg-danger-tint text-danger; }
+
+  /* View switcher: the active segment is raised white, never an ink fill —
+     fills belong to the one CTA. */
+  .segmented { @apply flex rounded-full bg-sunken p-[0.1875rem]; }
+  .segmented-item {
+    @apply rounded-full px-2.5 py-1 text-sm font-medium text-muted transition-colors duration-150;
+  }
+  .segmented-item[aria-selected="true"] {
+    @apply rounded-sm bg-surface text-foreground;
+    box-shadow: var(--edge-raised);
+  }
+}
+
+/* Agent mode (?agent / mode=agent sets data-agent on <html>): interactive
+ * targets grow, and hover-only affordances become always-visible. */
 :root[data-agent] button,
 :root[data-agent] input,
+:root[data-agent] select,
 :root[data-agent] textarea {
-  min-height: 2.5rem;
+  min-height: 2.75rem;
 }
 
 html,
@@ -156,6 +292,15 @@ body,
 }
 
 body {
-  background: var(--oc-background);
-  color: var(--oc-foreground);
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }

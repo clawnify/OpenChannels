@@ -137,7 +137,14 @@ instead of remembering what a member's phone number was last week.
 
 ## Pages
 
-- `/` — the inbox (sidebar → conversation list → thread). Screenshot-friendly.
+Every view is a real URL, so you can open one directly instead of clicking
+through to it, and a screenshot always has a link that reproduces it.
+
+- `/` — the whole open inbox (nav → conversation list → thread).
+- `/ch/<channel>` — one channel, e.g. `/ch/whatsapp`.
+- `/closed` — the closed archive.
+- `/setup` — WhatsApp numbers and the template catalogue.
+- `/c/<conversationId>` — one thread, open.
 - Append `?agent` when browsing it yourself for larger targets.
 
 ## API anchors

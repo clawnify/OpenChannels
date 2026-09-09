@@ -26,7 +26,8 @@ WhatsApp / Telegram / Slack / Email
 
 ## Features
 
-- Three-pane inbox: channels sidebar (live counts) → conversation list (search, unread) → thread
+- Three-pane inbox: channel navigation (live counts) → conversation list (search, unread) → thread
+- Every view is a URL (`/ch/whatsapp`, `/closed`, `/c/<id>`), so back, reload and cmd-click all behave
 - One conversation per contact, closed threads reopen automatically on new inbound
 - Queued / sent / failed delivery states on every outgoing reply
 - Start a conversation by searching the people app you already have — point the
