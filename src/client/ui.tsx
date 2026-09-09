@@ -34,20 +34,23 @@ export function ChannelMark({ channel, className }: { channel: string; className
   return <Icon className={className} aria-hidden />;
 }
 
-/** 11px uppercase tracked zone label — the Clawnify signature. */
-export function Eyebrow({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="text-[0.6875rem] font-semibold uppercase tracking-[0.08em] leading-none text-muted">
-      {children}
-    </div>
-  );
+/**
+ * The label above a zone: 13px, sentence case, muted.
+ *
+ * Deliberately not the 11px uppercase tracked style this used to be. That one
+ * exists for exactly one job — the label above a KPI number — and an interface
+ * covered in small caps reads as a control panel rather than a product
+ * (DESIGN.md, Signature 3).
+ */
+export function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <div className="section-label">{children}</div>;
 }
 
 export function ChannelChip({ channel }: { channel: string }) {
   const meta = channelMeta(channel);
   return (
     <span
-      className={`channel-chip ${channelClass(channel)} inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-normal`}
+      className={`channel-chip ${channelClass(channel)} inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium`}
     >
       <ChannelMark channel={channel} className="size-3" />
       {meta.label}
@@ -79,7 +82,7 @@ export function Avatar({ contact, size = 9 }: { contact: Contact; size?: 8 | 9 }
       {channelLogo(contact.channel) ? (
         /* Brand badge over imagery: white keyline circle (DESIGN.md keylines). */
         <span
-          className="absolute -bottom-0.5 -right-0.5 flex size-3.5 items-center justify-center rounded-full border border-border bg-surface"
+          className="absolute -bottom-0.5 -right-0.5 flex size-3.5 items-center justify-center rounded-full bg-surface shadow-edge"
           aria-hidden
         >
           <ChannelMark channel={contact.channel} className="size-2.5" />

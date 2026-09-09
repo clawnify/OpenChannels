@@ -9,7 +9,7 @@ import {
   sendTemplate,
   startConversation,
 } from "./api";
-import { CHANNELS, ChannelMark, Eyebrow, channelMeta } from "./ui";
+import { CHANNELS, ChannelMark, SectionLabel, channelMeta } from "./ui";
 
 /** Substitutes filled values into a template body for the live preview. */
 const renderPreview = (body: string, values: Record<string, string>) =>
@@ -55,7 +55,7 @@ function Dialog({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-[0_8px_24px_rgba(0,0,0,0.16)]"
+        className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-lg bg-surface shadow-float"
       >
         <div className="flex shrink-0 items-start gap-3 border-b border-border px-5 py-4">
           <div className="min-w-0 flex-1">
@@ -66,7 +66,7 @@ function Dialog({
             type="button"
             onClick={onClose}
             aria-label="Close dialog"
-            className="-mr-1 -mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-sm text-muted transition-colors duration-150 hover:bg-sunken hover:text-foreground"
+            className="btn btn-ghost -mr-1 -mt-0.5 size-8 shrink-0 px-0"
           >
             <X className="size-4" aria-hidden />
           </button>
@@ -173,14 +173,14 @@ export function TemplateComposer({
       <div className="space-y-4">
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
-            <Eyebrow>Template</Eyebrow>
+            <SectionLabel>Template</SectionLabel>
             <p className="mt-1.5 truncate font-mono text-[0.8125rem] text-foreground">{selected.name}</p>
           </div>
           <button
             type="button"
             onClick={() => setSelected(null)}
             aria-label="Choose a different template"
-            className="inline-flex h-8 shrink-0 items-center rounded-sm border border-border bg-surface px-2 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sunken"
+            className="btn btn-secondary"
           >
             Change
           </button>
@@ -188,12 +188,12 @@ export function TemplateComposer({
 
         {selected.variables.length > 0 ? (
           <div className="space-y-2.5">
-            <Eyebrow>Variables</Eyebrow>
+            <SectionLabel>Variables</SectionLabel>
             {selected.variables.map((token) => (
               <div key={token} className="space-y-1">
                 <label
                   htmlFor={`tpl-var-${token}`}
-                  className="block text-xs font-semibold tracking-[0.04em] text-muted"
+                  className="section-label block font-mono"
                 >
                   {`{{${token}}}`}
                 </label>
@@ -202,7 +202,7 @@ export function TemplateComposer({
                   value={values[token] ?? ""}
                   onChange={(e) => setValues((v) => ({ ...v, [token]: e.target.value }))}
                   placeholder={`Value for {{${token}}}`}
-                  className="h-9 w-full rounded-sm border border-border bg-surface px-2.5 text-[0.8125rem] text-foreground outline-none transition-colors duration-150 focus:border-ring placeholder:text-faint"
+                  className="input text-sm"
                 />
               </div>
             ))}
@@ -210,8 +210,8 @@ export function TemplateComposer({
         ) : null}
 
         <div className="space-y-1.5">
-          <Eyebrow>Preview</Eyebrow>
-          <div className="rounded-lg bg-sunken px-3.5 py-2.5">
+          <SectionLabel>Preview</SectionLabel>
+          <div className="rounded-md bg-sunken px-3.5 py-2.5">
             <p className="whitespace-pre-wrap text-sm leading-normal text-foreground">
               {renderPreview(selected.bodyText, values)}
             </p>
@@ -225,7 +225,7 @@ export function TemplateComposer({
         ) : null}
 
         <div className="flex items-center justify-between gap-3">
-          <p className="text-[0.6875rem] leading-relaxed text-faint">
+          <p className="text-xs leading-relaxed text-muted">
             {missing.length > 0
               ? `Fill ${missing.length} more ${missing.length === 1 ? "value" : "values"} to send.`
               : "Sent by your agent as an approved template."}
@@ -235,7 +235,7 @@ export function TemplateComposer({
             onClick={submit}
             disabled={sending || missing.length > 0}
             aria-label="Queue template for sending"
-            className="inline-flex h-8 shrink-0 items-center rounded-sm bg-primary px-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:bg-primary-hover disabled:opacity-50"
+            className="btn btn-primary"
           >
             {sending ? "Queueing…" : "Send template"}
           </button>
@@ -247,14 +247,17 @@ export function TemplateComposer({
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <div className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-sm border border-border bg-surface px-2.5 focus-within:border-ring">
-          <Search className="size-4 shrink-0 text-faint" aria-hidden />
+        <div className="relative min-w-0 flex-1">
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint"
+            aria-hidden
+          />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search approved templates…"
             aria-label="Search approved templates"
-            className="w-full bg-transparent text-[0.8125rem] text-foreground outline-none placeholder:text-faint"
+            className="input pl-8 text-sm"
           />
         </div>
         {templates && templates.length > 0 ? (
@@ -263,7 +266,7 @@ export function TemplateComposer({
             onClick={refresh}
             disabled={refreshing}
             aria-label="Refresh templates from the provider"
-            className="inline-flex h-8 shrink-0 items-center gap-x-1.5 rounded-sm border border-border bg-surface px-2 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sunken disabled:opacity-50"
+            className="btn btn-secondary"
           >
             <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} aria-hidden />
             {refreshing ? "Refreshing…" : "Refresh"}
@@ -291,7 +294,7 @@ export function TemplateComposer({
               onClick={refresh}
               disabled={refreshing}
               aria-label="Refresh templates from the provider"
-              className="mt-3 inline-flex h-8 items-center gap-x-1.5 rounded-sm bg-primary px-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:bg-primary-hover disabled:opacity-50"
+              className="btn btn-primary mx-auto mt-3"
             >
               <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} aria-hidden />
               {refreshing ? "Refreshing…" : "Refresh templates"}
@@ -299,7 +302,7 @@ export function TemplateComposer({
           )}
         </div>
       ) : (
-        <div className="max-h-64 divide-y divide-border overflow-y-auto rounded-lg border border-border">
+        <div className="card max-h-64 divide-y divide-border overflow-y-auto p-0">
           {templates.map((t) => (
             <button
               key={t.id}
@@ -312,12 +315,8 @@ export function TemplateComposer({
                 <span className="min-w-0 flex-1 truncate font-mono text-[0.8125rem] text-foreground">
                   {t.name}
                 </span>
-                <span className="shrink-0 rounded-sm border border-border bg-sunken px-2 py-0.5 text-[0.6875rem] text-muted">
-                  {t.language}
-                </span>
-                <span className="shrink-0 rounded-sm border border-border bg-sunken px-2 py-0.5 text-[0.6875rem] text-muted">
-                  {t.category}
-                </span>
+                <span className="chip">{t.language}</span>
+                <span className="chip">{t.category}</span>
               </div>
               <span className="line-clamp-2 text-[0.8125rem] leading-[1.45] text-muted">{t.bodyText}</span>
             </button>
@@ -448,7 +447,7 @@ export function NewConversationDialog({
       <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
           <div className="space-y-1.5">
-            <Eyebrow>Channel</Eyebrow>
+            <SectionLabel>Channel</SectionLabel>
             <div className="flex flex-wrap gap-1.5">
               {Object.keys(CHANNELS).map((ch) => {
                 const active = ch === channel;
@@ -459,11 +458,7 @@ export function NewConversationDialog({
                     onClick={() => setChannel(ch)}
                     aria-pressed={active}
                     aria-label={`Send on ${channelMeta(ch).label}`}
-                    className={`inline-flex h-8 items-center gap-x-1.5 rounded-sm border px-2 text-sm font-medium transition-colors duration-150 ${
-                      active
-                        ? "border-border bg-surface text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.06)]"
-                        : "border-transparent text-muted hover:bg-sunken"
-                    }`}
+                    className={`btn ${active ? "btn-secondary" : "btn-ghost"}`}
                   >
                     <ChannelMark channel={ch} className="size-4" />
                     {channelMeta(ch).label}
@@ -474,11 +469,11 @@ export function NewConversationDialog({
           </div>
 
           <div className="space-y-2.5">
-            <Eyebrow>Contact</Eyebrow>
+            <SectionLabel>Contact</SectionLabel>
 
             {source ? (
               picked ? (
-                <div className="flex items-center gap-2 rounded-sm border border-border bg-sunken px-2.5 py-2">
+                <div className="flex items-center gap-2 rounded-sm bg-sunken px-2.5 py-2">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[0.8125rem] font-medium text-foreground">
                       {picked.name || picked.ref}
@@ -492,7 +487,7 @@ export function NewConversationDialog({
                     type="button"
                     onClick={() => setPicked(null)}
                     aria-label="Unlink this person"
-                    className="inline-flex size-7 shrink-0 items-center justify-center rounded-sm text-muted transition-colors duration-150 hover:bg-surface hover:text-foreground"
+                    className="btn btn-ghost size-7 shrink-0 px-0 hover:bg-surface"
                   >
                     <X className="size-3.5" aria-hidden />
                   </button>
@@ -501,7 +496,7 @@ export function NewConversationDialog({
                 <div className="space-y-1">
                   <label
                     htmlFor="nc-person"
-                    className="block text-xs font-semibold tracking-[0.04em] text-muted"
+                    className="section-label block"
                   >
                     Find someone in {source.label ?? "your records"}
                   </label>
@@ -516,16 +511,16 @@ export function NewConversationDialog({
                       onChange={(e) => setQuery(e.target.value)}
                       autoFocus
                       placeholder="Search by name, phone or email"
-                      className="h-9 w-full rounded-sm border border-border bg-surface pl-8 pr-2.5 text-[0.8125rem] text-foreground outline-none transition-colors duration-150 focus:border-ring placeholder:text-faint"
+                      className="input pl-8 text-sm"
                     />
                   </div>
                   {query.trim() && !searching && results.length === 0 ? (
-                    <p className="text-[0.6875rem] leading-relaxed text-faint">
+                    <p className="text-xs leading-relaxed text-muted">
                       Nobody found — type the {handleLabel.toLowerCase()} below instead.
                     </p>
                   ) : null}
                   {results.length ? (
-                    <ul className="max-h-44 overflow-y-auto rounded-sm border border-border bg-surface">
+                    <ul className="max-h-44 overflow-y-auto rounded-sm bg-surface shadow-edge">
                       {results.map((p) => (
                         <li key={p.ref}>
                           <button
@@ -549,7 +544,7 @@ export function NewConversationDialog({
             ) : null}
 
             <div className="space-y-1">
-              <label htmlFor="nc-handle" className="block text-xs font-semibold tracking-[0.04em] text-muted">
+              <label htmlFor="nc-handle" className="section-label block">
                 {handleLabel}
               </label>
               <input
@@ -560,11 +555,11 @@ export function NewConversationDialog({
                 autoFocus={!source}
                 inputMode={channel === "whatsapp" || channel === "sms" ? "tel" : "text"}
                 placeholder={channel === "email" ? "person@company.com" : "+31612345678"}
-                className="h-9 w-full rounded-sm border border-border bg-surface px-2.5 text-[0.8125rem] text-foreground outline-none transition-colors duration-150 focus:border-ring placeholder:text-faint"
+                className="input text-sm"
               />
             </div>
             <div className="space-y-1">
-              <label htmlFor="nc-name" className="block text-xs font-semibold tracking-[0.04em] text-muted">
+              <label htmlFor="nc-name" className="section-label block">
                 Their name (optional)
               </label>
               <input
@@ -572,18 +567,18 @@ export function NewConversationDialog({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Kara Finley"
-                className="h-9 w-full rounded-sm border border-border bg-surface px-2.5 text-[0.8125rem] text-foreground outline-none transition-colors duration-150 focus:border-ring placeholder:text-faint"
+                className="input text-sm"
               />
               {/* "Display name" is Meta's term for the BUSINESS name recipients
                   see — using it here read as though this set our own. */}
-              <p className="text-[0.6875rem] leading-relaxed text-faint">
+              <p className="text-xs leading-relaxed text-muted">
                 Only labels this thread in your inbox. Leave it blank and their
                 WhatsApp profile name fills it in once they reply.
               </p>
             </div>
             {channel === "email" ? (
               <div className="space-y-1">
-                <label htmlFor="nc-subject" className="block text-xs font-semibold tracking-[0.04em] text-muted">
+                <label htmlFor="nc-subject" className="section-label block">
                   Subject
                 </label>
                 <input
@@ -591,7 +586,7 @@ export function NewConversationDialog({
                   value={subject}
                   onChange={(e) => setSubject(e.target.value)}
                   placeholder="Following up on your quote"
-                  className="h-9 w-full rounded-sm border border-border bg-surface px-2.5 text-[0.8125rem] text-foreground outline-none transition-colors duration-150 focus:border-ring placeholder:text-faint"
+                  className="input text-sm"
                 />
               </div>
             ) : null}
@@ -618,7 +613,7 @@ export function NewConversationDialog({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 items-center rounded-sm border border-border bg-surface px-2 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sunken"
+            className="btn btn-ghost"
           >
             Cancel
           </button>
@@ -626,7 +621,7 @@ export function NewConversationDialog({
             type="submit"
             disabled={busy || handle.trim() === ""}
             aria-label="Open the conversation"
-            className="inline-flex h-8 items-center rounded-sm bg-primary px-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:bg-primary-hover disabled:opacity-50"
+            className="btn btn-primary"
           >
             {busy ? "Opening…" : "Continue"}
           </button>

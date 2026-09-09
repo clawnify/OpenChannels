@@ -3,7 +3,7 @@ import { CheckCircle2, RefreshCw, TriangleAlert } from "lucide-react";
 import type { Phone } from "./api";
 import { listPhones, registerPhone, setDefaultPhone } from "./api";
 import { TemplatesPanel } from "./templates";
-import { Eyebrow } from "./ui";
+import { SectionLabel } from "./ui";
 
 /**
  * WhatsApp numbers and whether they can actually send.
@@ -13,7 +13,7 @@ import { Eyebrow } from "./ui";
  * at the provider no matter how healthy the inbox looks, which is invisible
  * from the conversation list. This panel is where that becomes visible.
  */
-export function WhatsAppSetup({ menu }: { menu?: React.ReactNode }) {
+export function WhatsAppSetup() {
   const [phones, setPhones] = useState<Phone[] | null>(null);
   const [wabaId, setWabaId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -36,26 +36,25 @@ export function WhatsAppSetup({ menu }: { menu?: React.ReactNode }) {
   }, [load]);
 
   return (
-    <section className="flex min-w-0 flex-1 flex-col bg-background">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:px-5">
-        {menu}
-        <h1 className="flex-1 text-[1.25rem] font-bold leading-tight tracking-[-0.01em]">
+        <h1 className="flex-1 truncate text-[1.375rem] font-semibold leading-tight tracking-[-0.01em]">
           WhatsApp setup
         </h1>
         <button
           type="button"
           onClick={() => load()}
           aria-label="Reload phone numbers"
-          className="inline-flex h-8 items-center gap-x-1.5 rounded-sm border border-border bg-surface px-2 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sunken"
+          className="btn btn-secondary"
         >
           <RefreshCw className="size-4" aria-hidden />
           Reload
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto p-4 md:p-6">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
         <div className="mx-auto max-w-3xl">
-          <Eyebrow>Sending numbers · {phones?.length ?? 0}</Eyebrow>
+          <SectionLabel>Sending numbers · {phones?.length ?? 0}</SectionLabel>
           {wabaId ? <p className="mt-1 text-xs text-muted">WABA ID · {wabaId}</p> : null}
 
           {error ? (
@@ -73,7 +72,7 @@ export function WhatsAppSetup({ menu }: { menu?: React.ReactNode }) {
             </p>
           ) : (
             <>
-              <div className="mt-3 divide-y divide-border rounded-lg border border-border">
+              <div className="card mt-3 divide-y divide-border overflow-hidden p-0">
                 {phones.map((p) => (
                   <PhoneRow
                     key={p.id}
@@ -104,7 +103,7 @@ export function WhatsAppSetup({ menu }: { menu?: React.ReactNode }) {
             </>
           )}
 
-          <p className="mt-4 text-[0.6875rem] leading-relaxed text-faint">
+          <p className="mt-4 text-xs leading-relaxed text-muted">
             Registering sets your account's two-step-verification PIN with Meta. It is sent
             straight to Meta and never stored here — keep your own record of it, because Meta asks
             for it again on any re-registration or number migration.
@@ -149,17 +148,15 @@ function PhoneRow({
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-medium">{phone.displayPhoneNumber}</span>
           {phone.isDefault ? (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-border bg-sunken px-2 py-0.5 text-[0.6875rem] text-muted">
-              Default
-            </span>
+            <span className="chip">Default</span>
           ) : null}
           {phone.registered ? (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-success/30 bg-success-tint px-2 py-0.5 text-xs font-normal text-success">
+            <span className="badge badge-success">
               <CheckCircle2 className="size-3" aria-hidden />
               Can send
             </span>
           ) : (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-warning/30 bg-warning-tint px-2 py-0.5 text-xs font-normal text-warning">
+            <span className="badge badge-warning">
               <TriangleAlert className="size-3" aria-hidden />
               Not registered
             </span>
@@ -176,7 +173,7 @@ function PhoneRow({
             type="button"
             onClick={onMakeDefault}
             aria-label={`Send from ${phone.displayPhoneNumber} by default`}
-            className="inline-flex h-8 shrink-0 items-center rounded-sm border border-border bg-surface px-2 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sunken"
+            className="btn btn-secondary"
           >
             Make default
           </button>
@@ -187,7 +184,7 @@ function PhoneRow({
           onClick={onRegister}
           disabled={busy}
           aria-label={`Register ${phone.displayPhoneNumber} with the Cloud API`}
-          className="inline-flex h-8 shrink-0 items-center rounded-sm bg-primary px-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:bg-primary-hover disabled:opacity-50"
+          className="btn btn-primary"
         >
           Register
         </button>
@@ -244,7 +241,7 @@ function RegisterDialog({
         role="dialog"
         aria-modal="true"
         aria-label="Register phone number"
-        className="w-full max-w-sm overflow-hidden rounded-xl border border-border bg-surface shadow-[0_8px_24px_rgba(0,0,0,0.16)]"
+        className="w-full max-w-sm overflow-hidden rounded-lg bg-surface shadow-float"
       >
         <div className="border-b border-border px-5 py-4">
           <h2 className="text-base font-semibold leading-tight">Register {phone.displayPhoneNumber}</h2>
@@ -255,7 +252,7 @@ function RegisterDialog({
         </div>
 
         <div className="space-y-1 px-5 py-4">
-          <label htmlFor="reg-pin" className="block text-xs font-semibold tracking-[0.04em] text-muted">
+          <label htmlFor="reg-pin" className="section-label block">
             Two-step verification PIN
           </label>
           <input
@@ -267,7 +264,7 @@ function RegisterDialog({
             onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
             placeholder="······"
             autoFocus
-            className="h-9 w-full rounded-sm border border-border bg-surface px-2.5 font-mono text-[0.8125rem] tracking-[0.3em] text-foreground outline-none transition-colors duration-150 focus:border-ring placeholder:text-faint placeholder:tracking-normal"
+            className="input font-mono tracking-[0.3em] placeholder:tracking-normal"
           />
           {error ? (
             <p role="alert" className="pt-1 text-[0.8125rem] leading-[1.45] text-danger">
@@ -280,7 +277,7 @@ function RegisterDialog({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 items-center rounded-sm border border-border bg-surface px-2 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sunken"
+            className="btn btn-ghost"
           >
             Cancel
           </button>
@@ -288,7 +285,7 @@ function RegisterDialog({
             type="submit"
             disabled={busy || !/^\d{6}$/.test(pin)}
             aria-label="Register this number with Meta"
-            className="inline-flex h-8 items-center rounded-sm bg-primary px-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:bg-primary-hover disabled:opacity-50"
+            className="btn btn-primary"
           >
             {busy ? "Registering…" : "Register"}
           </button>

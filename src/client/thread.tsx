@@ -21,15 +21,13 @@ const POLL_MS = 4000;
 function OutboundStatus({ message }: { message: Message }) {
   if (message.status === "queued") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning-tint px-2 py-0.5 text-xs text-warning">
-        Queued for the agent
-      </span>
+      <span className="badge badge-warning">Queued for the agent</span>
     );
   }
   if (message.status === "accepted") {
     return (
       <span
-        className="inline-flex items-center gap-1 rounded-full border border-border bg-sunken px-2 py-0.5 text-xs text-muted"
+        className="chip rounded-full"
         title="WhatsApp accepted it for delivery. Delivery is only confirmed once receipts are wired up."
       >
         Accepted
@@ -39,7 +37,7 @@ function OutboundStatus({ message }: { message: Message }) {
   if (message.status === "failed") {
     return (
       <span
-        className="inline-flex items-center gap-1 rounded-full border border-danger/30 bg-danger-tint px-2 py-0.5 text-xs text-danger"
+        className="badge badge-danger"
         title={message.error ?? undefined}
       >
         <TriangleAlert className="size-3" aria-hidden /> Failed
@@ -52,7 +50,7 @@ function OutboundStatus({ message }: { message: Message }) {
   // next, so it is shown rather than hidden in a tooltip.
   if (message.status === "undelivered") {
     return (
-      <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-danger/30 bg-danger-tint px-2 py-0.5 text-xs text-danger">
+      <span className="badge badge-danger max-w-full">
         <TriangleAlert className="size-3 shrink-0" aria-hidden />
         <span className="truncate">Not delivered{message.error ? ` — ${message.error}` : ""}</span>
       </span>
@@ -61,7 +59,7 @@ function OutboundStatus({ message }: { message: Message }) {
   if (message.status === "read") {
     return (
       <span
-        className="inline-flex items-center gap-1 text-xs text-primary"
+        className="inline-flex items-center gap-1 text-xs text-success"
         title="Read by the recipient"
       >
         <CheckCheck className="size-3.5" aria-hidden /> Read
@@ -95,9 +93,9 @@ function MessageRow({ message }: { message: Message }) {
 
   if (message.kind === "comment") {
     return (
-      <div className="mx-4 rounded-lg border border-warning/25 bg-warning-tint px-3.5 py-2.5 md:mx-6">
-        <div className="mb-1 flex items-center gap-1.5 text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-warning">
-          <StickyNote className="size-3" aria-hidden />
+      <div className="mx-4 rounded-md bg-warning-tint px-3.5 py-2.5 md:mx-6">
+        <div className="mb-1 flex items-center gap-1.5 text-[0.8125rem] font-medium text-warning">
+          <StickyNote className="size-3.5" aria-hidden />
           Internal note · {message.authorName ?? "Someone"}
         </div>
         <p className="whitespace-pre-wrap text-[0.8125rem] leading-[1.45] text-foreground">{message.body}</p>
@@ -112,8 +110,8 @@ function MessageRow({ message }: { message: Message }) {
         <div
           className={
             outbound
-              ? "rounded-lg border border-border bg-surface px-3.5 py-2.5"
-              : "rounded-lg bg-sunken px-3.5 py-2.5"
+              ? "rounded-md bg-surface px-3.5 py-2.5 shadow-edge"
+              : "rounded-md bg-sunken px-3.5 py-2.5"
           }
         >
           {message.body ? (
@@ -132,11 +130,11 @@ function MessageRow({ message }: { message: Message }) {
             </p>
           ) : null}
         </div>
-        <div className="flex items-center gap-1.5 text-[0.6875rem] text-faint">
+        <div className="flex items-center gap-1.5 text-xs text-muted">
           {outbound && message.authorName ? <span>{message.authorName}</span> : null}
           <span>{timeOfDay(message.createdAt)}</span>
           {message.templateName ? (
-            <span className="inline-flex items-center gap-1 rounded-sm border border-border bg-sunken px-2 py-0.5 text-[0.6875rem] text-muted">
+            <span className="chip">
               <FileText className="size-3" aria-hidden />
               {message.templateName}
             </span>
@@ -178,7 +176,7 @@ function MessagesSkeleton() {
           className={`flex ${r.mine ? "justify-end" : "justify-start"}`}
         >
           <div
-            className="h-12 animate-pulse rounded-lg bg-sunken"
+            className="h-12 animate-pulse rounded-md bg-sunken"
             style={{ width: r.w }}
           />
         </div>
@@ -320,7 +318,7 @@ export function ThreadPane({
   const templateOnly = mode === "reply" && !conversation.window.freeformAllowed;
 
   return (
-    <section className="flex min-w-0 flex-1 flex-col bg-background">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       {/* Toolbar */}
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:px-5">
         {onBack ? (
@@ -328,7 +326,7 @@ export function ThreadPane({
             type="button"
             onClick={onBack}
             aria-label="Back to conversation list"
-            className="-ml-2 -mr-1 inline-flex size-8 shrink-0 items-center justify-center rounded-sm text-muted transition-colors duration-150 hover:bg-sunken hover:text-foreground md:hidden"
+            className="btn btn-ghost -ml-2 -mr-1 size-8 shrink-0 px-0 md:hidden"
           >
             <ChevronLeft className="size-5" aria-hidden />
           </button>
@@ -336,12 +334,12 @@ export function ThreadPane({
         <Avatar contact={contact} size={8} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h1 className="truncate text-[1.25rem] font-bold leading-tight tracking-[-0.01em]">
+            <h1 className="truncate text-[1.375rem] font-semibold leading-tight tracking-[-0.01em]">
               {contactLabel(contact)}
             </h1>
             <ChannelChip channel={conversation.channel} />
             {conversation.window.freeformAllowed ? null : (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-warning/30 bg-warning-tint px-2 py-0.5 text-xs font-normal text-warning">
+              <span className="badge badge-warning">
                 <FileText className="size-3" aria-hidden />
                 Template only
               </span>
@@ -356,7 +354,7 @@ export function ThreadPane({
           type="button"
           onClick={toggleStatus}
           aria-label={closed ? "Reopen conversation" : "Close conversation"}
-          className="inline-flex h-8 items-center gap-x-1.5 rounded-sm border border-border bg-surface px-2 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sunken"
+          className="btn btn-secondary"
         >
           {closed ? <RotateCcw className="size-4" aria-hidden /> : <Archive className="size-4" aria-hidden />}
           {closed ? "Reopen" : "Close"}
@@ -364,7 +362,7 @@ export function ThreadPane({
       </header>
 
       {/* Timeline */}
-      <div ref={scrollRef} onScroll={onScroll} className="flex-1 space-y-4 overflow-y-auto py-5">
+      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto py-5">
         {messages === null ? (
           <MessagesSkeleton />
         ) : messages.length === 0 ? (
@@ -378,9 +376,9 @@ export function ThreadPane({
 
       {/* Composer */}
       <footer className="shrink-0 border-t border-border p-3 md:p-4">
-        <div className="rounded-lg border border-border bg-surface">
+        <div className="card p-0">
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-border px-3 py-2">
-            <div className="flex rounded-lg bg-sunken p-0.5" role="tablist" aria-label="Compose mode">
+            <div className="segmented" role="tablist" aria-label="Compose mode">
               {(["reply", "note"] as const).map((m) => (
                 <button
                   key={m}
@@ -388,11 +386,7 @@ export function ThreadPane({
                   role="tab"
                   aria-selected={mode === m}
                   onClick={() => setMode(m)}
-                  className={`rounded-sm px-2.5 py-1 text-sm font-medium transition-colors duration-150 ${
-                    mode === m
-                      ? "border border-border bg-surface text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.06)]"
-                      : "text-muted"
-                  }`}
+                  className="segmented-item"
                 >
                   {m === "reply" ? "Reply" : "Internal note"}
                 </button>
@@ -401,18 +395,16 @@ export function ThreadPane({
             {mode === "reply" ? (
               <div className="flex items-center gap-2">
                 {templateOnly ? (
-                  <span className="text-[0.6875rem] text-faint">
-                    Template required — window closed
-                  </span>
+                  <span className="text-xs text-muted">Template required — window closed</span>
                 ) : null}
                 {phones.length > 1 ? (
-                  <label className="flex items-center gap-1.5 text-[0.6875rem] text-faint">
+                  <label className="flex items-center gap-1.5 text-xs text-muted">
                     From
                     <select
                       value={fromId ?? ""}
                       onChange={(e) => setFromId(e.target.value || null)}
                       aria-label="Send from which number"
-                      className="h-7 rounded-sm border border-border bg-surface px-1.5 text-[0.6875rem] text-foreground outline-none focus:border-ring"
+                      className="input h-7 w-auto px-1.5 text-xs"
                     >
                       {phones.map((p) => (
                         <option key={p.id} value={p.id}>
@@ -423,13 +415,11 @@ export function ThreadPane({
                     </select>
                   </label>
                 ) : templateOnly ? null : (
-                  <span className="text-[0.6875rem] text-faint">
-                    Sent via {conversation.channel}
-                  </span>
+                  <span className="text-xs text-muted">Sent via {conversation.channel}</span>
                 )}
               </div>
             ) : (
-              <span className="text-[0.6875rem] text-faint">Never delivered to the contact</span>
+              <span className="text-xs text-muted">Never delivered to the contact</span>
             )}
           </div>
 
@@ -483,7 +473,7 @@ export function ThreadPane({
                     onClick={submit}
                     disabled={sending || draft.trim() === ""}
                     aria-label="Queue reply for sending"
-                    className="inline-flex h-8 items-center gap-x-1.5 rounded-sm bg-primary px-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:bg-primary-hover disabled:opacity-50"
+                    className="btn btn-primary"
                   >
                     {sending ? "Queueing…" : "Send"}
                   </button>
@@ -493,7 +483,7 @@ export function ThreadPane({
                     onClick={submit}
                     disabled={sending || draft.trim() === ""}
                     aria-label="Add internal note"
-                    className="inline-flex h-8 items-center gap-x-1.5 rounded-sm border border-border bg-surface px-2 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sunken disabled:opacity-50"
+                    className="btn btn-secondary"
                   >
                     {sending ? "Saving…" : "Add note"}
                   </button>

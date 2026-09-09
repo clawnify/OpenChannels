@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Archive, Inbox, Menu, PenLine, Search, Settings, TriangleAlert } from "lucide-react";
+import { AppNav, reportLocation, type AppNavGroup, type NavColor } from "@clawnify/app/client";
+import { Inbox, PenLine, Search, TriangleAlert } from "lucide-react";
 import type { Conversation, Stats } from "./api";
 import {
   contactLabel,
@@ -12,7 +13,7 @@ import {
 import { NewConversationDialog } from "./compose";
 import { WhatsAppSetup } from "./setup";
 import { ThreadPane } from "./thread";
-import { Avatar, CHANNELS, ChannelMark, Eyebrow, channelMeta, timeAgo } from "./ui";
+import { Avatar, CHANNELS, channelClass, channelMeta, timeAgo } from "./ui";
 
 const POLL_MS = 5000;
 const PAGE_SIZE = 50;
@@ -24,149 +25,48 @@ type Filter =
   | { kind: "closed" }
   | { kind: "setup" };
 
-function SidebarRow({
-  active,
-  onClick,
-  icon,
-  label,
-  count,
-  ariaLabel,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-  count?: number;
-  ariaLabel: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={ariaLabel}
-      aria-current={active ? "page" : undefined}
-      className={`flex w-full items-center gap-2 rounded-md px-2.5 py-[0.4375rem] text-sm transition-colors duration-150 ${
-        active
-          ? "bg-primary/12 font-semibold text-primary"
-          : "text-foreground hover:bg-sunken"
-      }`}
-    >
-      <span className="shrink-0">{icon}</span>
-      <span className="min-w-0 flex-1 truncate text-left">{label}</span>
-      {count !== undefined && count > 0 ? (
-        <span
-          className={`text-xs tabular-nums ${active ? "text-primary" : "text-muted"}`}
-        >
-          {count}
-        </span>
-      ) : null}
-    </button>
-  );
+/**
+ * How a channel draws in the navigation.
+ *
+ * `icon` is a name from the platform's TILE_ICONS library — anything outside it
+ * renders as a plain dot in the Clawnify sidebar — and `color` matches the hue
+ * the same channel carries everywhere else in the app (--ch-* in index.css), so
+ * the nav tile and the thread's brand mark read as one system.
+ */
+const CHANNEL_NAV: Record<string, { icon: string; color?: NavColor }> = {
+  whatsapp: { icon: "message-square", color: "green" },
+  telegram: { icon: "send", color: "blue" },
+  slack: { icon: "hash", color: "violet" },
+  email: { icon: "mail", color: "orange" },
+  sms: { icon: "phone", color: "sky" },
+  other: { icon: "message-square" },
+};
+
+const channelNav = (channel: string) => CHANNEL_NAV[channel] ?? CHANNEL_NAV.other;
+
+/** The `id` <AppNav> hands back on click, and the value `active` is matched on. */
+const navId = (filter: Filter) =>
+  filter.kind === "channel" ? `ch:${filter.channel}` : filter.kind;
+
+/** Every view is a real URL, so back, reload and cmd-click all behave. */
+function filterPath(filter: Filter): string {
+  switch (filter.kind) {
+    case "channel":
+      return `/ch/${encodeURIComponent(filter.channel)}`;
+    case "closed":
+      return "/closed";
+    case "setup":
+      return "/setup";
+    default:
+      return "/";
+  }
 }
 
-function Sidebar({
-  stats,
-  filter,
-  setFilter,
-}: {
-  stats: Stats | null;
-  filter: Filter;
-  setFilter: (f: Filter) => void;
-}) {
-  const channelCount = (ch: string) => stats?.channels.find((c) => c.channel === ch)?.open ?? 0;
-  // Only channels that have (or had) conversations show up — plus none-yet hint.
-  const activeChannels = Object.keys(CHANNELS).filter((ch) => channelCount(ch) > 0);
-
-  return (
-    <aside className="flex w-[16.25rem] shrink-0 flex-col border-r border-border bg-surface">
-      <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-        <Inbox className="size-4 text-foreground" aria-hidden />
-        <span className="text-base font-semibold">Channels</span>
-        {stats && stats.queued > 0 ? (
-          <span className="ml-auto rounded-full border border-warning/30 bg-warning-tint px-2 py-0.5 text-xs text-warning tabular-nums">
-            {stats.queued} queued
-          </span>
-        ) : null}
-      </div>
-
-      <nav className="flex-1 space-y-5 overflow-y-auto p-3">
-        <div className="space-y-1">
-          <div className="px-2.5 pb-1.5 pt-1">
-            <Eyebrow>Inbox</Eyebrow>
-          </div>
-          <SidebarRow
-            active={filter.kind === "all"}
-            onClick={() => setFilter({ kind: "all" })}
-            icon={<Inbox className="size-4" aria-hidden />}
-            label="All open"
-            count={stats?.totalOpen}
-            ariaLabel="Show all open conversations"
-          />
-        </div>
-
-        <div className="space-y-1">
-          <div className="px-2.5 pb-1.5">
-            <Eyebrow>Channels</Eyebrow>
-          </div>
-          {activeChannels.length === 0 ? (
-            <p className="px-2.5 py-1 text-xs leading-relaxed text-muted">
-              No channels yet. Your agent adds one the first time it mirrors a message.
-            </p>
-          ) : (
-            activeChannels.map((ch) => {
-              const meta = channelMeta(ch);
-              return (
-                <SidebarRow
-                  key={ch}
-                  active={filter.kind === "channel" && filter.channel === ch}
-                  onClick={() => setFilter({ kind: "channel", channel: ch })}
-                  icon={<ChannelMark channel={ch} className="size-4" />}
-                  label={meta.label}
-                  count={channelCount(ch)}
-                  ariaLabel={`Show ${meta.label} conversations`}
-                />
-              );
-            })
-          )}
-        </div>
-
-        <div className="space-y-1">
-          <div className="px-2.5 pb-1.5">
-            <Eyebrow>Views</Eyebrow>
-          </div>
-          <SidebarRow
-            active={filter.kind === "closed"}
-            onClick={() => setFilter({ kind: "closed" })}
-            icon={<Archive className="size-4" aria-hidden />}
-            label="Closed"
-            ariaLabel="Show closed conversations"
-          />
-          <SidebarRow
-            active={filter.kind === "setup"}
-            onClick={() => setFilter({ kind: "setup" })}
-            icon={<Settings className="size-4" aria-hidden />}
-            label="WhatsApp setup"
-            ariaLabel="Open WhatsApp setup"
-          />
-        </div>
-      </nav>
-
-    </aside>
-  );
-}
-
-/** Opens the sidebar drawer on screens too narrow to keep it in view. */
-function MenuButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label="Open inbox filters"
-      className="-ml-1 inline-flex size-8 shrink-0 items-center justify-center rounded-sm text-muted transition-colors duration-150 hover:bg-sunken hover:text-foreground lg:hidden"
-    >
-      <Menu className="size-4" aria-hidden />
-    </button>
-  );
+function filterFromId(id: string): Filter {
+  if (id.startsWith("ch:")) return { kind: "channel", channel: id.slice(3) };
+  if (id === "closed") return { kind: "closed" };
+  if (id === "setup") return { kind: "setup" };
+  return { kind: "all" };
 }
 
 function ConversationRow({
@@ -185,10 +85,16 @@ function ConversationRow({
       onClick={onClick}
       aria-label={`Open conversation with ${name}`}
       aria-current={active ? "true" : undefined}
-      className={`flex w-full items-start gap-3 border-b border-border px-4 py-3 text-left transition-colors duration-150 ${
+      className={`flex w-full items-stretch gap-2.5 border-b border-border py-3 pl-2 pr-4 text-left transition-colors duration-150 ${
         active ? "bg-sunken" : "hover:bg-sunken"
       }`}
     >
+      {/* Category as a 3px inset bar: the cheapest visible classification there
+          is, and it never competes with the text beside it. */}
+      <span
+        className={`channel-dot ${channelClass(conversation.channel)} my-0.5 w-[3px] shrink-0 rounded-full`}
+        aria-hidden
+      />
       <Avatar contact={conversation.contact} />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
@@ -198,12 +104,12 @@ function ConversationRow({
             {name}
           </span>
           {conversation.undelivered ? (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-danger/30 bg-danger-tint px-1.5 py-px text-[0.6875rem] text-danger">
+            <span className="badge badge-danger">
               <TriangleAlert className="size-3" aria-hidden />
               Not delivered
             </span>
           ) : null}
-          <span className="shrink-0 text-[0.6875rem] text-faint tabular-nums">
+          <span className="data shrink-0 text-xs text-faint">
             {timeAgo(conversation.lastMessageAt)}
           </span>
         </div>
@@ -216,7 +122,7 @@ function ConversationRow({
             {conversation.lastMessagePreview || "No messages yet"}
           </span>
           {conversation.unread ? (
-            <span className="size-2 shrink-0 rounded-full bg-primary" aria-label="Unread" />
+            <span className="size-2 shrink-0 rounded-full bg-accent" aria-label="Unread" />
           ) : null}
         </div>
       </div>
@@ -231,21 +137,40 @@ function conversationIdFromPath(): string | null {
 }
 
 /**
- * Point the address bar at a thread (or back at the inbox).
+ * The view a path names. A thread path (`/c/<id>`) carries no filter of its
+ * own: opening a thread never changes which list you came from, and a cold load
+ * of a thread link lands on the whole inbox behind it.
+ */
+function filterFromPath(): Filter {
+  const path = window.location.pathname;
+  const channel = path.match(/^\/ch\/([^/?#]+)/);
+  if (channel) return { kind: "channel", channel: decodeURIComponent(channel[1]) };
+  if (path === "/closed") return { kind: "closed" };
+  if (path === "/setup") return { kind: "setup" };
+  return { kind: "all" };
+}
+
+/**
+ * Point the address bar at a view, and tell the dashboard host where we are so
+ * a reload inside it restores the same screen.
  *
  * `push` for a navigation the reader made — it should be undoable with the back
  * button. `replace` for corrections they did not ask for, so we never bury the
  * page they arrived from under history they did not create.
  */
-function syncUrl(id: string | null, mode: "push" | "replace" = "push") {
-  const next = (id ? `/c/${encodeURIComponent(id)}` : "/") + window.location.search;
-  if (next === window.location.pathname + window.location.search) return;
-  window.history[mode === "push" ? "pushState" : "replaceState"]({ id }, "", next);
+function syncUrl(path: string, mode: "push" | "replace" = "push") {
+  const next = path + window.location.search;
+  if (next !== window.location.pathname + window.location.search) {
+    window.history[mode === "push" ? "pushState" : "replaceState"]({}, "", next);
+  }
+  reportLocation(next);
 }
+
+const threadPath = (id: string) => `/c/${encodeURIComponent(id)}`;
 
 export function App() {
   const [stats, setStats] = useState<Stats | null>(null);
-  const [filter, setFilter] = useState<Filter>({ kind: "all" });
+  const [filter, setFilter] = useState<Filter>(filterFromPath);
   const [search, setSearch] = useState("");
   const [conversations, setConversations] = useState<Conversation[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -260,8 +185,6 @@ export function App() {
   // deployer config rather than assumed.
   const [selectedId, setSelectedId] = useState<string | null>(conversationIdFromPath());
   const [showNew, setShowNew] = useState(false);
-  /** Sidebar drawer on narrow screens (below lg the sidebar leaves the flow). */
-  const [drawer, setDrawer] = useState(false);
   /** A just-opened thread, so it renders before the list has refetched. */
   const [pending, setPending] = useState<Conversation | null>(null);
   const searchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -282,7 +205,7 @@ export function App() {
       .catch(() => {
         if (cancelled) return;
         setSelectedId(null);
-        syncUrl(null, "replace");
+        syncUrl("/", "replace");
       });
     return () => { cancelled = true; };
   }, [selectedId, conversations, pending]);
@@ -290,9 +213,18 @@ export function App() {
   // Back/forward. The browser changed the URL without telling React, so the
   // selection follows the address bar rather than the other way round.
   useEffect(() => {
-    const onPop = () => setSelectedId(conversationIdFromPath());
+    const onPop = () => {
+      setSelectedId(conversationIdFromPath());
+      setFilter(filterFromPath());
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Tell the host where we started, so a dashboard reload restores this screen
+  // rather than dropping the reader back on the inbox.
+  useEffect(() => {
+    reportLocation(window.location.pathname + window.location.search);
   }, []);
 
   // Agent mode: larger tap targets + no hover-only affordances (index.css).
@@ -349,7 +281,7 @@ export function App() {
     setShowNew(false);
     setPending(conversation);
     setSelectedId(conversation.id);
-    syncUrl(conversation.id);
+    syncUrl(threadPath(conversation.id));
     setSearch("");
     setFilter({ kind: "all" });
   }
@@ -396,40 +328,75 @@ export function App() {
 
   async function select(conversation: Conversation) {
     setSelectedId(conversation.id);
-    syncUrl(conversation.id);
+    syncUrl(threadPath(conversation.id));
     if (conversation.unread) {
       await patchConversation(conversation.id, { unread: 0 }).catch(() => {});
       load().catch(() => {});
     }
   }
 
-  /** Filter changes made from the drawer also dismiss it. */
-  function navigate(f: Filter) {
-    setFilter(f);
-    setDrawer(false);
+  /** A nav row: the view becomes the URL, and any open thread closes with it. */
+  function navigate(next: Filter) {
+    setFilter(next);
+    setSelectedId(null);
+    syncUrl(filterPath(next));
   }
 
-  const sidebarDrawer = drawer ? (
-    <div className="fixed inset-0 z-40 lg:hidden">
-      <div
-        className="absolute inset-0 bg-foreground/25"
-        onMouseDown={() => setDrawer(false)}
-        aria-hidden
-      />
-      <div className="absolute inset-y-0 left-0 flex shadow-[0_8px_24px_rgba(0,0,0,0.16)]">
-        <Sidebar stats={stats} filter={filter} setFilter={navigate} />
-      </div>
-    </div>
-  ) : null;
+  // Channels appear once they carry something. The list is the org's real
+  // channel mix rather than a menu of everything the app could mirror.
+  const channelCount = (ch: string) => stats?.channels.find((c) => c.channel === ch)?.open ?? 0;
+  const activeChannels = Object.keys(CHANNELS).filter((ch) => channelCount(ch) > 0);
+
+  /**
+   * The app's navigation, declared once.
+   *
+   * Standalone, <AppNav> paints it as the sidebar; inside the Clawnify
+   * dashboard it paints nothing and hands the same list to the host, which
+   * lists it under the app's own group — so the user sees one nav, not two.
+   * It is plain data, so the live counts are just state.
+   */
+  const navGroups: AppNavGroup[] = [
+    {
+      items: [
+        // The home item is not drawn as a row: the app's name opens it.
+        { id: "all", label: "Inbox", href: "/", icon: "inbox", home: true },
+        ...activeChannels.map((ch) => ({
+          id: `ch:${ch}`,
+          label: channelMeta(ch).label,
+          href: filterPath({ kind: "channel", channel: ch }),
+          count: channelCount(ch),
+          ...channelNav(ch),
+        })),
+      ],
+    },
+    {
+      label: "Views",
+      items: [
+        { id: "closed", label: "Closed", href: "/closed", icon: "archive" },
+        { id: "setup", label: "WhatsApp setup", href: "/setup", icon: "settings" },
+      ],
+    },
+  ];
+
+  const nav = (
+    <AppNav
+      title="Channels"
+      icon="inbox"
+      groups={navGroups}
+      active={navId(filter)}
+      onNavigate={(item) => navigate(filterFromId(item.id))}
+    />
+  );
+
+  // <AppNav> is a 260px column at md and up and a horizontal strip below it, so
+  // it goes first inside a flex-col → md:flex-row shell.
+  const shell = "flex h-full min-h-0 flex-col bg-background font-sans text-foreground md:flex-row";
 
   if (filter.kind === "setup") {
     return (
-      <div className="flex h-full bg-background font-sans text-foreground">
-        <div className="hidden shrink-0 lg:flex">
-          <Sidebar stats={stats} filter={filter} setFilter={setFilter} />
-        </div>
-        <WhatsAppSetup menu={<MenuButton onClick={() => setDrawer(true)} />} />
-        {sidebarDrawer}
+      <div className={shell}>
+        {nav}
+        <WhatsAppSetup />
       </div>
     );
   }
@@ -442,57 +409,58 @@ export function App() {
         : channelMeta(filter.channel).label;
 
   return (
-    <div className="flex h-full bg-background font-sans text-foreground">
-      <div className="hidden shrink-0 lg:flex">
-        <Sidebar stats={stats} filter={filter} setFilter={setFilter} />
-      </div>
+    <div className={shell}>
+      {nav}
 
       {/* Conversation list — on phones it swaps out for the open thread. */}
       <section
-        className={`${selected ? "hidden md:flex" : "flex"} w-full min-w-0 shrink-0 flex-col border-r border-border bg-surface md:w-[22rem]`}
+        className={`${selected ? "hidden md:flex" : "flex"} w-full min-h-0 min-w-0 shrink-0 flex-col border-r border-border bg-surface md:w-[22rem]`}
       >
         <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5">
-            <MenuButton onClick={() => setDrawer(true)} />
-            <Eyebrow>
-              {listTitle} · {total}
-            </Eyebrow>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <h1 className="truncate text-[0.9375rem] font-semibold leading-tight">{listTitle}</h1>
+            <span className="data shrink-0 text-xs text-muted">{total}</span>
+            {stats && stats.queued > 0 ? (
+              <span className="badge badge-warning" title="Waiting for your agent to send">
+                {stats.queued} queued
+              </span>
+            ) : null}
           </div>
           <button
             type="button"
             onClick={() => setShowNew(true)}
             aria-label="Start a new conversation"
-            className="inline-flex h-8 shrink-0 items-center gap-x-1.5 rounded-sm border border-border bg-surface px-2 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sunken"
+            className="btn btn-secondary"
           >
             <PenLine className="size-4" aria-hidden />
             New
           </button>
         </div>
         <div className="shrink-0 border-b border-border p-3">
-          <div className="flex h-9 items-center gap-2 rounded-sm border border-border bg-surface px-2.5 focus-within:border-ring">
-            <Search className="size-4 shrink-0 text-faint" aria-hidden />
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint"
+              aria-hidden
+            />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search conversations…"
               aria-label="Search conversations"
-              className="w-full bg-transparent text-[0.8125rem] text-foreground outline-none placeholder:text-faint"
+              className="input pl-8 text-sm"
             />
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {conversations === null ? (
-            <p className="pt-12 text-center text-sm text-muted">Loading…</p>
+            <ConversationsSkeleton />
           ) : conversations.length === 0 ? (
-            <div className="px-6 pt-12 text-center">
-              <p className="text-sm text-muted">
-                {debouncedSearch
-                  ? "Nothing matches that search."
-                  : filter.kind === "closed"
-                    ? "No closed conversations yet."
-                    : "No conversations yet. Ask your agent to mirror its channels into this inbox — see agent.md."}
-              </p>
-            </div>
+            <EmptyList
+              search={debouncedSearch}
+              filter={filter}
+              onClearSearch={() => setSearch("")}
+              onNew={() => setShowNew(true)}
+            />
           ) : (
             conversations.map((c) => (
               <ConversationRow
@@ -520,23 +488,17 @@ export function App() {
           onConversationChanged={() => load().catch(() => {})}
           onBack={() => {
             setSelectedId(null);
-            syncUrl(null);
+            syncUrl(filterPath(filter));
           }}
         />
       ) : (
+        /* Desktop placeholder, not an empty state: the way forward already sits
+           in the list beside it, and a second ink button here would give the
+           screen two. */
         <section className="hidden min-w-0 flex-1 items-center justify-center bg-background md:flex">
           <div className="text-center">
             <Inbox className="mx-auto size-6 text-faint" aria-hidden />
             <p className="mt-3 text-sm text-muted">Select a conversation to read the thread.</p>
-            <button
-              type="button"
-              onClick={() => setShowNew(true)}
-              aria-label="Start a new conversation"
-              className="mt-4 inline-flex h-8 items-center gap-x-1.5 rounded-sm bg-primary px-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:bg-primary-hover"
-            >
-              <PenLine className="size-4" aria-hidden />
-              New conversation
-            </button>
           </div>
         </section>
       )}
@@ -544,8 +506,87 @@ export function App() {
       {showNew ? (
         <NewConversationDialog onClose={() => setShowNew(false)} onOpened={openStarted} />
       ) : null}
+    </div>
+  );
+}
 
-      {sidebarDrawer}
+/**
+ * The shape of the list that is coming, in `sunken` with a slow shimmer.
+ *
+ * A centred "Loading…" line was honest but re-flowed the whole rail every time
+ * the filter changed, which reads as a flicker even when nothing is wrong.
+ */
+function ConversationsSkeleton() {
+  return (
+    <div role="status" aria-label="Loading conversations">
+      {[68, 54, 72, 46, 60, 50].map((w, i) => (
+        <div key={i} aria-hidden className="flex items-start gap-3 border-b border-border px-4 py-3">
+          <div className="size-9 shrink-0 animate-pulse rounded-full bg-sunken" />
+          <div className="min-w-0 flex-1 space-y-2 pt-1">
+            <div className="h-2.5 w-24 animate-pulse rounded-full bg-sunken" />
+            <div className="h-2.5 animate-pulse rounded-full bg-sunken" style={{ width: `${w}%` }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Never a bare "No data".
+ *
+ * A filtered list with no matches is a different thing from an inbox with
+ * nothing in it: it says what was filtered and offers to clear it, and it must
+ * not offer to create — the thing the reader is looking for may well exist.
+ */
+function EmptyList({
+  search,
+  filter,
+  onClearSearch,
+  onNew,
+}: {
+  search: string;
+  filter: Filter;
+  onClearSearch: () => void;
+  onNew: () => void;
+}) {
+  if (search) {
+    return (
+      <div className="px-6 pt-12 text-center">
+        <p className="text-sm leading-relaxed text-muted">
+          Nothing in this view matches “{search}”.
+        </p>
+        <button type="button" onClick={onClearSearch} className="btn btn-ghost mx-auto mt-3">
+          Clear search
+        </button>
+      </div>
+    );
+  }
+  if (filter.kind === "closed") {
+    return (
+      <div className="px-6 pt-12 text-center">
+        <p className="text-sm leading-relaxed text-muted">
+          Nothing has been closed yet. Closing a thread files it here without deleting anything.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="px-6 pt-12 text-center">
+      <Inbox className="mx-auto size-6 text-faint" aria-hidden />
+      <p className="mt-3 text-sm leading-relaxed text-muted">
+        No conversations here yet. Your agent adds one the first time it mirrors a message — see
+        agent.md — or write to someone first.
+      </p>
+      <button
+        type="button"
+        onClick={onNew}
+        aria-label="Start a new conversation"
+        className="btn btn-primary mx-auto mt-4"
+      >
+        <PenLine className="size-4" aria-hidden />
+        New conversation
+      </button>
     </div>
   );
 }

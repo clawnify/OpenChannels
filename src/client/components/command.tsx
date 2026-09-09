@@ -23,7 +23,7 @@ export function CommandInput({
       <Search className="size-3.5 shrink-0 text-faint" aria-hidden />
       <CommandPrimitive.Input
         className={cn(
-          "h-9 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-faint disabled:opacity-50",
+          "h-8 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-faint disabled:opacity-50",
           className,
         )}
         {...props}
@@ -40,7 +40,7 @@ export const CommandList = ({
 );
 
 export const CommandEmpty = (props: React.ComponentProps<typeof CommandPrimitive.Empty>) => (
-  <CommandPrimitive.Empty className="py-5 text-center text-[0.8125rem] text-muted" {...props} />
+  <CommandPrimitive.Empty className="py-5 text-center text-sm text-muted" {...props} />
 );
 
 export const CommandGroup = ({
@@ -49,7 +49,7 @@ export const CommandGroup = ({
 }: React.ComponentProps<typeof CommandPrimitive.Group>) => (
   <CommandPrimitive.Group
     className={cn(
-      "text-foreground [&_[cmdk-group-heading]]:px-1 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[0.6875rem] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-faint",
+      "text-foreground [&_[cmdk-group-heading]]:px-1 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[0.8125rem] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted",
       className,
     )}
     {...props}

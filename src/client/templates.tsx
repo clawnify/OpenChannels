@@ -8,7 +8,7 @@ import {
   listTemplates,
   refreshTemplates,
 } from "./api";
-import { Eyebrow } from "./ui";
+import { SectionLabel } from "./ui";
 
 /**
  * Read and edit the approved template catalogue.
@@ -20,10 +20,10 @@ import { Eyebrow } from "./ui";
  */
 
 const STATUS_TONE: Record<string, string> = {
-  APPROVED: "border-emerald-300 bg-emerald-50 text-emerald-700",
-  PENDING: "border-amber-300 bg-amber-50 text-amber-700",
-  REJECTED: "border-red-300 bg-red-50 text-red-700",
-  PAUSED: "border-amber-300 bg-amber-50 text-amber-700",
+  APPROVED: "badge-success",
+  PENDING: "badge-warning",
+  REJECTED: "badge-danger",
+  PAUSED: "badge-warning",
 };
 
 const STATUS_MEANING: Record<string, string> = {
@@ -34,13 +34,13 @@ const STATUS_MEANING: Record<string, string> = {
 };
 
 function StatusPill({ status }: { status: string }) {
-  const tone = STATUS_TONE[status] ?? "border-border bg-sunken text-muted";
+  const tone = STATUS_TONE[status];
   return (
     <span
-      className={`shrink-0 rounded-full border px-2 py-0.5 text-[0.6875rem] font-medium ${tone}`}
+      className={tone ? `badge ${tone}` : "chip rounded-full"}
       title={STATUS_MEANING[status] ?? status}
     >
-      {status}
+      {status.charAt(0) + status.slice(1).toLowerCase()}
     </span>
   );
 }
@@ -96,9 +96,9 @@ function SampleFields({
       </p>
       {variables.map((v, i) => (
         <label key={v} className="flex items-center gap-2">
-          <span className="w-24 shrink-0 font-mono text-[0.75rem] text-muted">{`{{${v}}}`}</span>
+          <span className="w-24 shrink-0 font-mono text-xs text-muted">{`{{${v}}}`}</span>
           <input
-            className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[0.8125rem]"
+            className="input min-w-0 flex-1 text-sm"
             value={values[i] ?? ""}
             placeholder="e.g. Lexie"
             onChange={(e) => {
@@ -169,7 +169,7 @@ function Editor({
   return (
     <div className="mt-3 space-y-3">
       <textarea
-        className="min-h-[8rem] w-full rounded-md border border-border bg-surface px-3 py-2 font-mono text-[0.8125rem] leading-relaxed"
+        className="input min-h-[8rem] font-mono text-sm"
         value={draft}
         onChange={(e) => setDraft((e.target as HTMLTextAreaElement).value)}
         spellCheck
@@ -182,7 +182,7 @@ function Editor({
       <SampleFields variables={after} values={samples} onChange={setSamples} />
 
       {countChanged && (
-        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+        <div className="flex items-start gap-2 rounded-md bg-warning-tint px-3 py-2 text-xs leading-relaxed text-warning">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
           <span>
             This changes the number of variables from <strong>{before.length}</strong> to{" "}
@@ -193,7 +193,7 @@ function Editor({
         </div>
       )}
 
-      <div className="flex items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2 text-xs leading-relaxed text-muted">
+      <div className="flex items-start gap-2 rounded-md bg-sunken px-3 py-2 text-xs leading-relaxed text-muted">
         <RefreshCw className="mt-0.5 size-3.5 shrink-0" aria-hidden />
         <span>
           Saving submits this to the provider for review. It leaves the send picker until they
@@ -202,7 +202,7 @@ function Editor({
       </div>
 
       {error && (
-        <p className="flex items-start gap-2 text-xs text-red-600">
+        <p role="alert" className="flex items-start gap-2 text-xs text-danger">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden /> {error}
         </p>
       )}
@@ -210,7 +210,7 @@ function Editor({
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="btn btn-primary"
           disabled={!dirty || saving || deleting || missingSample}
           onClick={save}
         >
@@ -223,7 +223,7 @@ function Editor({
           <>
             <button
               type="button"
-              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              className="btn btn-danger"
               disabled={deleting}
               onClick={remove}
             >
@@ -231,13 +231,13 @@ function Editor({
             </button>
             <button
               type="button"
-              className="rounded-md border border-border px-3 py-1.5 text-sm"
+              className="btn btn-secondary"
               disabled={deleting}
               onClick={() => setConfirming(false)}
             >
               Keep it
             </button>
-            <span className="text-xs text-red-700">
+            <span className="text-xs text-danger">
               This can't be undone, and the provider blocks the name{" "}
               <span className="font-mono">{template.name}</span> for 30 days.
             </span>
@@ -245,7 +245,7 @@ function Editor({
         ) : (
           <button
             type="button"
-            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm text-red-700 disabled:opacity-50"
+            className="btn btn-danger ml-auto"
             disabled={saving}
             onClick={() => setConfirming(true)}
           >
@@ -273,10 +273,10 @@ const CATEGORIES = [
 function CategoryPill({ category }: { category: string }) {
   return (
     <span
-      className="shrink-0 rounded-full border border-border bg-sunken px-2 py-0.5 text-[0.6875rem] font-medium text-muted"
+      className="chip rounded-full"
       title={CATEGORIES.find((c) => c.value === category)?.hint ?? category}
     >
-      {category}
+      {category.charAt(0) + category.slice(1).toLowerCase()}
     </span>
   );
 }
@@ -327,12 +327,12 @@ function NewTemplate({ onCreated, onCancel }: { onCreated: (t: Template) => void
   };
 
   return (
-    <div className="mb-4 space-y-3 rounded-lg border border-border bg-surface p-3">
+    <div className="card mb-4 space-y-3 p-3">
       <div className="flex flex-wrap gap-2">
         <label className="min-w-[14rem] flex-1">
-          <span className="mb-1 block text-xs text-muted">Name — permanent, and lowercase</span>
+          <span className="section-label mb-1 block">Name — permanent, and lowercase</span>
           <input
-            className="w-full rounded-md border border-border bg-surface px-2 py-1 font-mono text-[0.8125rem]"
+            className="input font-mono text-sm"
             value={name}
             placeholder="appointment_reminder_v1"
             onChange={(e) =>
@@ -341,18 +341,18 @@ function NewTemplate({ onCreated, onCancel }: { onCreated: (t: Template) => void
           />
         </label>
         <label className="w-28">
-          <span className="mb-1 block text-xs text-muted">Language</span>
+          <span className="section-label mb-1 block">Language</span>
           <input
-            className="w-full rounded-md border border-border bg-surface px-2 py-1 font-mono text-[0.8125rem]"
+            className="input font-mono text-sm"
             value={language}
             placeholder="en_US"
             onChange={(e) => setLanguage((e.target as HTMLInputElement).value)}
           />
         </label>
         <label className="w-44">
-          <span className="mb-1 block text-xs text-muted">Category</span>
+          <span className="section-label mb-1 block">Category</span>
           <select
-            className="w-full rounded-md border border-border bg-surface px-2 py-1 text-[0.8125rem]"
+            className="input text-sm"
             value={category}
             onChange={(e) => setCategory((e.target as HTMLSelectElement).value)}
           >
@@ -372,7 +372,7 @@ function NewTemplate({ onCreated, onCancel }: { onCreated: (t: Template) => void
       </p>
 
       <textarea
-        className="min-h-[6rem] w-full rounded-md border border-border bg-surface px-3 py-2 font-mono text-[0.8125rem] leading-relaxed"
+        className="input min-h-[6rem] font-mono text-sm"
         value={bodyText}
         placeholder={"Hi {{1}}, your table for {{2}} is confirmed."}
         onChange={(e) => setBodyText((e.target as HTMLTextAreaElement).value)}
@@ -382,13 +382,13 @@ function NewTemplate({ onCreated, onCancel }: { onCreated: (t: Template) => void
       <SampleFields variables={variables} values={samples} onChange={setSamples} />
 
       {name && !nameOk && (
-        <p className="text-xs text-red-600">
+        <p className="text-xs text-danger">
           Lowercase letters, digits and underscores only — the provider rejects anything else.
         </p>
       )}
 
       {error && (
-        <p className="flex items-start gap-2 text-xs text-red-600">
+        <p role="alert" className="flex items-start gap-2 text-xs text-danger">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden /> {error}
         </p>
       )}
@@ -396,7 +396,7 @@ function NewTemplate({ onCreated, onCancel }: { onCreated: (t: Template) => void
       <div className="flex items-center gap-2">
         <button
           type="button"
-          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="btn btn-primary"
           disabled={!ready || saving}
           onClick={submit}
         >
@@ -404,7 +404,7 @@ function NewTemplate({ onCreated, onCancel }: { onCreated: (t: Template) => void
         </button>
         <button
           type="button"
-          className="rounded-md border border-border px-3 py-1.5 text-sm"
+          className="btn btn-ghost"
           disabled={saving}
           onClick={onCancel}
         >
@@ -458,11 +458,11 @@ export function TemplatesPanel() {
     <div>
       <div className="flex items-center gap-2">
         <FileText className="size-4" aria-hidden />
-        <Eyebrow>Message templates · {items?.length ?? 0}</Eyebrow>
+        <SectionLabel>Message templates · {items?.length ?? 0}</SectionLabel>
         <button
           type="button"
           onClick={() => setCreating((v) => !v)}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-sm"
+          className="btn btn-secondary ml-auto"
         >
           <Plus className="size-3.5" aria-hidden />
           New template
@@ -471,7 +471,7 @@ export function TemplatesPanel() {
           type="button"
           onClick={resync}
           disabled={refreshing}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-sm disabled:opacity-50"
+          className="btn btn-secondary"
         >
           <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} aria-hidden />
           {refreshing ? "Syncing…" : "Sync from provider"}
@@ -505,7 +505,7 @@ export function TemplatesPanel() {
         ) : (
           <ul className="space-y-2">
             {items.map((t) => (
-              <li key={t.id} className="rounded-lg border border-border bg-surface p-3">
+              <li key={t.id} className="card p-3">
                 <div className="flex items-start gap-2">
                   <button
                     type="button"
@@ -517,7 +517,7 @@ export function TemplatesPanel() {
                       <StatusPill status={t.status} />
                       <CategoryPill category={t.category} />
                       {justSaved === t.id && (
-                        <span className="inline-flex items-center gap-1 text-[0.6875rem] text-emerald-700">
+                        <span className="inline-flex items-center gap-1 text-xs text-success">
                           <Check className="size-3" aria-hidden /> submitted
                         </span>
                       )}
