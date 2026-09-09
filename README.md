@@ -1,4 +1,9 @@
-<img src="readme-banner.png" alt="OpenChannels preview" />
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./readme-banner-dark.png">
+    <img alt="OpenChannels" src="./readme-banner.png">
+  </picture>
+</p>
 
 # OpenChannels
 
