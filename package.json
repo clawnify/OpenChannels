@@ -31,7 +31,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.0.0",
-    "clawnify": "^0.11.3",
+    "clawnify": "^0.16.3",
     "drizzle-kit": "^0.31.0",
     "drizzle-orm": "^0.45.2",
     "tailwindcss": "^4.0.0",
