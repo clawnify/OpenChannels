@@ -11,6 +11,6 @@
     "credentials": ["whatsapp-business"]
   },
   "api": {
-    "public_routes": ["/api/media/*"]
+    "public_routes": ["/api/media/**"]
   }
 }
