@@ -77,10 +77,19 @@ export const conversations = sqliteTable(
     unread: integer("unread").notNull().default(0),
     lastMessageAt: text("last_message_at").notNull().$default(() => new Date().toISOString()),
     lastMessagePreview: text("last_message_preview").notNull().default(""),
+    /**
+     * The dashboard user who owns this thread, so a shared inbox doesn't drop
+     * balls. `assigneeName` is a display snapshot — names change in Supabase
+     * and there is no live "user" table here to resolve against — while
+     * `assigneeId` stays the stable identity for "mine" filters.
+     */
+    assigneeId: text("assignee_id"),
+    assigneeName: text("assignee_name"),
     createdAt: text("created_at").notNull().$default(() => new Date().toISOString()),
   },
   (t) => ({
     byOrgRecency: index("conversations_by_org_recency").on(t.orgId, t.lastMessageAt),
+    byOrgAssignee: index("conversations_by_org_assignee").on(t.orgId, t.assigneeId),
     byOrgContact: uniqueIndex("conversations_by_org_contact").on(t.orgId, t.contactId),
   }),
 );
@@ -195,6 +204,20 @@ export const messages = sqliteTable(
     mediaRef: text("media_ref"),
     /** image | audio | video | document — what the channel said it was. */
     mediaType: text("media_type"),
+    /**
+     * The app's own storage key once the bytes have been fetched and kept.
+     *
+     * `mediaRef` is the channel's reference, and both shapes of it expire —
+     * Meta keeps media for about 30 days, Bird URLs for less. `mediaKey` is
+     * the durable copy under the app's own bucket, and it is what the timeline
+     * renders from. Unset means the attachment has not been (or cannot be)
+     * fetched yet: the ref is still recorded, so a later pass can backfill.
+     */
+    mediaKey: text("media_key"),
+    /** MIME type of the stored bytes, served back as-is on download. */
+    mediaMime: text("media_mime"),
+    /** Original filename when the channel supplied one. */
+    mediaName: text("media_name"),
     /**
      * Template send (outbound only, null for freeform). The agent MUST send
      * these through the template API with these exact values — `body` holds the

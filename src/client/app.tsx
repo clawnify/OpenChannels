@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppNav, reportLocation, type AppNavGroup, type NavColor } from "@clawnify/app/client";
 import { Inbox, PenLine, Search, TriangleAlert } from "lucide-react";
-import type { Conversation, Stats } from "./api";
+import type { Conversation, SearchHit, Stats } from "./api";
 import {
   contactLabel,
   getStats,
   listConversations,
+  searchMessages,
   getConversation,
   patchConversation,
   startConversation,
@@ -13,7 +14,7 @@ import {
 import { NewConversationDialog } from "./compose";
 import { WhatsAppSetup } from "./setup";
 import { ThreadPane } from "./thread";
-import { Avatar, CHANNELS, channelClass, channelMeta, timeAgo } from "./ui";
+import { Avatar, SectionLabel, CHANNELS, channelClass, channelMeta, timeAgo } from "./ui";
 
 const POLL_MS = 5000;
 const PAGE_SIZE = 50;
@@ -21,6 +22,8 @@ const PAGE_SIZE = 50;
 /** Sidebar filter: the whole inbox, one channel, or the closed archive. */
 type Filter =
   | { kind: "all" }
+  | { kind: "mine" }
+  | { kind: "unassigned" }
   | { kind: "channel"; channel: string }
   | { kind: "closed" }
   | { kind: "setup" };
@@ -53,6 +56,10 @@ function filterPath(filter: Filter): string {
   switch (filter.kind) {
     case "channel":
       return `/ch/${encodeURIComponent(filter.channel)}`;
+    case "mine":
+      return "/mine";
+    case "unassigned":
+      return "/unassigned";
     case "closed":
       return "/closed";
     case "setup":
@@ -64,6 +71,8 @@ function filterPath(filter: Filter): string {
 
 function filterFromId(id: string): Filter {
   if (id.startsWith("ch:")) return { kind: "channel", channel: id.slice(3) };
+  if (id === "mine") return { kind: "mine" };
+  if (id === "unassigned") return { kind: "unassigned" };
   if (id === "closed") return { kind: "closed" };
   if (id === "setup") return { kind: "setup" };
   return { kind: "all" };
@@ -108,6 +117,13 @@ function ConversationRow({
               <TriangleAlert className="size-3" aria-hidden />
               Not delivered
             </span>
+          ) : conversation.stale ? (
+            <span
+              className="inline-flex shrink-0 items-center rounded-full border border-border bg-sunken px-1.5 py-px text-[0.6875rem] text-muted"
+              title="No activity for over a day"
+            >
+              Stale
+            </span>
           ) : null}
           <span className="data shrink-0 text-xs text-faint">
             {timeAgo(conversation.lastMessageAt)}
@@ -143,6 +159,8 @@ function conversationIdFromPath(): string | null {
  */
 function filterFromPath(): Filter {
   const path = window.location.pathname;
+  if (path === "/mine") return { kind: "mine" };
+  if (path === "/unassigned") return { kind: "unassigned" };
   const channel = path.match(/^\/ch\/([^/?#]+)/);
   if (channel) return { kind: "channel", channel: decodeURIComponent(channel[1]) };
   if (path === "/closed") return { kind: "closed" };
@@ -189,6 +207,20 @@ export function App() {
   const [pending, setPending] = useState<Conversation | null>(null);
   const searchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  /** Matches inside message bodies, beyond what the preview list shows. */
+  const [hits, setHits] = useState<SearchHit[] | null>(null);
+
+  useEffect(() => {
+    if (!debouncedSearch) {
+      setHits(null);
+      return;
+    }
+    let cancelled = false;
+    searchMessages(debouncedSearch)
+      .then((r) => { if (!cancelled) setHits(r.items); })
+      .catch(() => { if (!cancelled) setHits(null); });
+    return () => { cancelled = true; };
+  }, [debouncedSearch]);
 
   // A /c/<id> link may point at a thread the current filter, search or page
   // does not contain — a closed one, or simply further down the list. Fetch it
@@ -247,6 +279,12 @@ export function App() {
     const params = {
       status: filter.kind === "closed" ? "closed" : "open",
       channel: filter.kind === "channel" ? filter.channel : undefined,
+      assignee:
+        filter.kind === "mine"
+          ? ("me" as const)
+          : filter.kind === "unassigned"
+            ? ("unassigned" as const)
+            : undefined,
       search: debouncedSearch || undefined,
       limit: PAGE_SIZE,
     };
@@ -372,6 +410,8 @@ export function App() {
     {
       label: "Views",
       items: [
+        { id: "mine", label: "Mine", href: "/mine", icon: "user", count: stats?.mine },
+        { id: "unassigned", label: "Unassigned", href: "/unassigned", icon: "users", count: stats?.unassigned },
         { id: "closed", label: "Closed", href: "/closed", icon: "archive" },
         { id: "setup", label: "WhatsApp setup", href: "/setup", icon: "settings" },
       ],
@@ -404,9 +444,13 @@ export function App() {
   const listTitle =
     filter.kind === "all"
       ? "All open"
-      : filter.kind === "closed"
-        ? "Closed"
-        : channelMeta(filter.channel).label;
+      : filter.kind === "mine"
+        ? "Mine"
+        : filter.kind === "unassigned"
+          ? "Unassigned"
+          : filter.kind === "closed"
+            ? "Closed"
+            : channelMeta(filter.channel).label;
 
   return (
     <div className={shell}>
@@ -471,6 +515,39 @@ export function App() {
               />
             ))
           )}
+          {hits && hits.length > 0 ? (
+            <div className="border-t border-border">
+              <div className="px-4 pb-1 pt-3">
+                <SectionLabel>Found in messages</SectionLabel>
+              </div>
+              {hits.map((hit) => (
+                <button
+                  key={hit.messageId}
+                  type="button"
+                  onClick={() => {
+                    setSelectedId(hit.conversationId);
+                    syncUrl(threadPath(hit.conversationId));
+                    setSearch("");
+                    setFilter({ kind: "all" });
+                  }}
+                  aria-label={`Open the conversation with ${contactLabel(hit.contact)} at the matching message`}
+                  className="block w-full border-b border-border px-4 py-2.5 text-left transition-colors duration-150 hover:bg-sunken"
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="truncate text-[0.8125rem] font-medium">
+                      {contactLabel(hit.contact)}
+                    </span>
+                    <span className="shrink-0 text-[0.6875rem] text-faint tabular-nums">
+                      {timeAgo(hit.createdAt)}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 line-clamp-2 text-[0.8125rem] leading-[1.45] text-muted">
+                    {hit.body}
+                  </p>
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </section>
 
