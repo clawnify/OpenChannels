@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Hash, Mail, MessageCircle, MessageSquare, Send } from "lucide-react";
 import { logoUrl } from "@clawnify/logokit";
@@ -29,7 +30,8 @@ export const channelLogo = (channel: string): string | null => {
 /** Brand logo when the channel has one, lucide line icon otherwise. */
 export function ChannelMark({ channel, className }: { channel: string; className: string }) {
   const brand = channelLogo(channel);
-  if (brand) return <img src={brand} alt="" className={className} />;
+  const [failed, setFailed] = useState<string | null>(null);
+  if (brand && brand !== failed) return <img src={brand} alt="" className={className} onError={() => setFailed(brand)} />;
   const Icon = channelMeta(channel).icon;
   return <Icon className={className} aria-hidden />;
 }
