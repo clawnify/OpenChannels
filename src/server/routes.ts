@@ -12,6 +12,8 @@ type Env = {
   Bindings: {
     DB: D1Database;
     CLAWNIFY_TOKEN?: string;
+    /** Optional OpenCRM sibling used unless a profile source was configured. */
+    CRM_APP_ID?: string;
     /**
      * The app's own object storage (R2), provisioned because clawnify.json
      * declares `app.storage: true`. Optional in the type: an app deployed
@@ -1203,7 +1205,7 @@ api.openapi(
   async (c) => {
     const org = orgId(c);
     if (!org) return c.json({ error: "unauthorized" }, 401);
-    return c.json({ source: await readProfileSource(dbFor(c.env), org) }, 200);
+    return c.json({ source: await readProfileSource(dbFor(c.env), org, c.env) }, 200);
   },
 );
 
@@ -1288,7 +1290,7 @@ api.openapi(
   async (c) => {
     const org = orgId(c);
     if (!org) return c.json({ error: "unauthorized" }, 401);
-    const src = await readProfileSource(dbFor(c.env), org);
+    const src = await readProfileSource(dbFor(c.env), org, c.env);
     if (!src) return c.json({ items: [] }, 200);
 
     const { q, limit } = c.req.valid("query");
@@ -1340,7 +1342,7 @@ api.openapi(
       return c.json({ error: "this contact is not linked to a person" }, 409);
     }
 
-    const src = await readProfileSource(db, org);
+    const src = await readProfileSource(db, org, c.env);
     if (!src?.get) {
       return c.json({ error: "no profile source with a `get` path is configured" }, 409);
     }
@@ -2661,9 +2663,15 @@ interface ProfileSource {
   profileUrl?: string;
 }
 
-const readProfileSource = async (db: DB, org: string): Promise<ProfileSource | null> => {
+const readProfileSource = async (db: DB, org: string, env: Env["Bindings"]): Promise<ProfileSource | null> => {
   const raw = await readSetting(db, org, PROFILE_SOURCE_KEY);
-  if (!raw) return null;
+  if (!raw) return env.CRM_APP_ID ? {
+    appId: env.CRM_APP_ID,
+    label: "CRM",
+    search: { path: "/api/contacts", query: "search", collection: "contacts" },
+    get: { path: "/api/contacts/{ref}", collection: "contact" },
+    fields: { ref: "id", name: "first_name", email: "email", phone: "phone" },
+  } : null;
   try {
     const parsed = JSON.parse(raw) as ProfileSource;
     // A half-written config is worse than none: it would fail deep inside a
