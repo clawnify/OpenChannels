@@ -3,14 +3,23 @@
   "version": 1,
   "name": "OpenChannels",
   "icon": "icon.svg",
-  "description": "One inbox for every channel your agent handles — WhatsApp, Telegram, Slack and email conversations mirrored into a single reviewable timeline, with agent-mediated replies and a per-thread audit trail of what the agent did.",
+  "description": "One inbox for every channel your agent handles \u2014 WhatsApp, Telegram, Slack and email conversations mirrored into a single reviewable timeline, with agent-mediated replies and a per-thread audit trail of what the agent did.",
   "app": {
     "framework": "react+hono",
     "database": true,
     "storage": true,
-    "credentials": ["whatsapp-business"]
+    "credentials": [
+      "whatsapp-business"
+    ]
   },
   "api": {
-    "public_routes": ["/api/media/**"]
+    "public_routes": [
+      "/api/media/**"
+    ]
+  },
+  "env": {
+    "optional": [
+      "CRM_APP_ID"
+    ]
   }
 }

@@ -69,3 +69,10 @@ Hono API + React + Vite over a SQLite database (Drizzle) — the standard Clawni
 ## License
 
 MIT
+
+### Connect a CRM
+
+Set the optional `CRM_APP_ID` to an OpenCRM app in the same Clawnify workspace.
+The new-conversation picker can then find its contacts and retain the link to
+the selected record. A profile source saved through `/api/profile-source` takes
+precedence, so an existing custom people directory keeps its mapping.
