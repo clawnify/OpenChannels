@@ -33,9 +33,9 @@ type DB = DrizzleD1Database<typeof schema>;
 const dbFor = (env: Env["Bindings"]) => getDB(env, { schema }) as DB;
 
 /**
- * When the sync may fire. Office hours by default: a LinkedIn account that
- * reads and sends around the clock looks automated, which is what LinkedIn
- * restricts, and every run spends the agent's credits.
+ * When the sync may fire. Office hours only: a LinkedIn account that reads and
+ * sends around the clock, or through the weekend, looks automated, which is
+ * what LinkedIn restricts, and every run spends the agent's credits.
  */
 export const SYNC_CADENCES = {
   "workday-hourly": { label: "Every hour, weekdays 8:00–18:00", cron: "0 8-18 * * 1-5" },
@@ -44,7 +44,6 @@ export const SYNC_CADENCES = {
   // times the hourly option; a run that outlasts the interval makes the next
   // fire stop at its first call (409) rather than overlap.
   "workday-10m": { label: "Every 10 minutes, weekdays 8:00–18:00 (uses the most credits)", cron: "*/10 8-18 * * 1-5" },
-  "every-3h": { label: "Every 3 hours, every day", cron: "0 */3 * * *" },
 } as const;
 type Cadence = keyof typeof SYNC_CADENCES;
 const CADENCE_KEYS = Object.keys(SYNC_CADENCES) as [Cadence, ...Cadence[]];
