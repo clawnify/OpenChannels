@@ -394,11 +394,14 @@ export function ThreadPane({
   const contact = conversation.contact;
   const closed = conversation.status === "closed";
   const channelLabel = channelMeta(conversation.channel).label;
-  const replyOnly = !!channelMeta(conversation.channel).replyOnly;
+  const connectionsOnly = !!channelMeta(conversation.channel).connectionsOnly;
   /** Notes are always freeform — only an outbound reply is window-gated. */
-  const templateOnly = mode === "reply" && !conversation.window.freeformAllowed && !replyOnly;
-  /** A reply-only thread the contact hasn't written in yet: nothing to answer. */
-  const awaitingContact = mode === "reply" && !conversation.window.freeformAllowed && replyOnly;
+  const templateOnly = mode === "reply" && !conversation.window.freeformAllowed && !connectionsOnly;
+  /** The opening message already went out and the contact hasn't answered. */
+  const awaitingContact = mode === "reply" && !conversation.window.freeformAllowed && connectionsOnly;
+  /** Nobody has written yet: whatever is sent now is the one opening message. */
+  const openingMessage =
+    mode === "reply" && connectionsOnly && conversation.window.freeformAllowed && !conversation.window.lastInboundAt;
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
@@ -421,7 +424,7 @@ export function ThreadPane({
               {contactLabel(contact)}
             </h1>
             <ChannelChip channel={conversation.channel} />
-            {conversation.window.freeformAllowed ? null : replyOnly ? (
+            {conversation.window.freeformAllowed ? null : connectionsOnly ? (
               <span className="badge badge-warning">Waiting for them to write</span>
             ) : (
               <span className="badge badge-warning">
@@ -534,7 +537,7 @@ export function ThreadPane({
 
           {awaitingContact ? (
             <p className="px-3 py-3 text-[0.8125rem] leading-[1.45] text-muted">
-              {`${contactLabel(contact)} hasn't written to you on ${channelLabel} yet. OpenChannels only replies inside ${channelLabel} conversations the other person started.`}
+              {`You've already messaged ${contactLabel(contact)} on ${channelLabel}. You can write again once they reply.`}
             </p>
           ) : templateOnly ? (
             <div className="px-3 py-3">
@@ -554,6 +557,11 @@ export function ThreadPane({
             </div>
           ) : (
             <>
+              {openingMessage ? (
+                <p className="border-b border-border bg-sunken px-3 py-1.5 text-[0.75rem] leading-[1.45] text-muted">
+                  {`Opening message: sent only if ${contactLabel(contact)} is a 1st-degree connection. After this you can write again once they reply.`}
+                </p>
+              ) : null}
               {attached && mode === "reply" ? (
             <div className="flex items-center justify-between gap-2 border-b border-border bg-sunken px-3 py-1.5">
               <span className="inline-flex min-w-0 items-center gap-1.5 text-[0.75rem] text-muted">
@@ -597,9 +605,9 @@ export function ThreadPane({
               <div className="flex items-center justify-between px-3 pb-2.5">
                 <div className="flex items-center gap-1.5">
                 {/* Attach is a reply-mode affordance: notes are internal, the
-                    template path has no attachment field, and reply-only
+                    template path has no attachment field, and connection
                     channels (LinkedIn) take text only. */}
-                {mode === "reply" && !templateOnly && !replyOnly ? (
+                {mode === "reply" && !templateOnly && !connectionsOnly ? (
                   <>
                     <input
                       ref={fileInputRef}

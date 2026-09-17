@@ -4,8 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
 
-// LinkedIn is reply-only: threads start when the contact writes, and every
-// reply is written by a person in the app. These run the real worker.
+// LinkedIn speaks as a person's account: a person writes every message, a
+// thread takes one opening message until the contact replies, and the agent
+// sends openers to connections only. These run the real worker.
 
 const org = 'linkedin-test-org';
 const agent = { 'X-Clawnify-Org-Id': org, 'X-Clawnify-Caller': 'agent', 'Content-Type': 'application/json' };
@@ -82,14 +83,14 @@ test('LinkedIn replies are text only', async () => {
   assert.match(r.body.error, /text only/);
 });
 
-test('no reply until the contact has written, even if our side already did', async () => {
-  // Our account's own earlier message, mirrored as outbound, opens nothing.
+test('an earlier message of ours, with no reply, blocks another until they answer', async () => {
+  // Our account's own message, mirrored as outbound, is the opening message.
   const { body: { conversationId } } = await ingest('https://www.linkedin.com/in/not-yet', 'outbound', 'Hi Jane', 'li-6');
   const conv = await call(`/api/conversations/${conversationId}`, person);
   assert.equal(conv.body.window.freeformAllowed, false);
   const r = await call(`/api/conversations/${conversationId}/reply`, person, 'POST', { body: 'Following up' });
   assert.equal(r.status, 409);
-  assert.match(r.body.error, /hasn't written to you on LinkedIn/);
+  assert.match(r.body.error, /write again once they reply/);
 
   // Once they answer, the same thread takes a reply.
   await ingest('https://www.linkedin.com/in/not-yet', 'inbound', 'Sure', 'li-7');
@@ -97,12 +98,54 @@ test('no reply until the contact has written, even if our side already did', asy
   assert.equal(ok.status, 201);
 });
 
-test('a LinkedIn conversation cannot be started from the app', async () => {
-  const r = await call('/api/conversations', person, 'POST', {
+test('a person opens a thread with a connection and gets exactly one opening message', async () => {
+  const started = await call('/api/conversations', person, 'POST', {
+    channel: 'linkedin', handle: 'linkedin.com/in/Warm-Lead/', name: 'Warm Lead',
+  });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  assert.equal(started.body.contact.handle, 'https://www.linkedin.com/in/warm-lead');
+  assert.equal(started.body.window.freeformAllowed, true);
+  const id = started.body.id;
+
+  const first = await call(`/api/conversations/${id}/reply`, person, 'POST', { body: 'Hi, good to be connected' });
+  assert.equal(first.status, 201);
+  const second = await call(`/api/conversations/${id}/reply`, person, 'POST', { body: 'Just checking in' });
+  assert.equal(second.status, 409);
+
+  // The agent is told it is an opener, so it checks the connection first.
+  const item = (await call('/api/outbox', agent)).body.items.find((i) => i.message.id === first.body.id);
+  assert.equal(item.opening, true);
+});
+
+test('an opener the agent could not send does not use up the thread', async () => {
+  const { body: conv } = await call('/api/conversations', person, 'POST', {
+    channel: 'linkedin', handle: 'https://www.linkedin.com/in/not-a-connection',
+  });
+  const first = await call(`/api/conversations/${conv.id}/reply`, person, 'POST', { body: 'Hello' });
+  const failed = await call(`/api/messages/${first.body.id}/status`, agent, 'POST', {
+    status: 'failed', error: 'Not a LinkedIn connection',
+  });
+  assert.equal(failed.status, 200, JSON.stringify(failed.body));
+  const retry = await call(`/api/conversations/${conv.id}/reply`, person, 'POST', { body: 'Hello again' });
+  assert.equal(retry.status, 201);
+});
+
+test('replies after they write are not openers', async () => {
+  const { body: { conversationId } } = await ingest('https://www.linkedin.com/in/replied-lead', 'inbound', 'Hey', 'li-8');
+  const sent = await call(`/api/conversations/${conversationId}/reply`, person, 'POST', { body: 'Hi!' });
+  const item = (await call('/api/outbox', agent)).body.items.find((i) => i.message.id === sent.body.id);
+  assert.equal(item.opening, false);
+});
+
+test('only a person can open a LinkedIn thread, and only with a profile URL', async () => {
+  const byAgent = await call('/api/conversations', agent, 'POST', {
     channel: 'linkedin', handle: 'https://www.linkedin.com/in/cold-lead',
   });
-  assert.equal(r.status, 409);
-  assert.match(r.body.error, /can't be started here/);
+  assert.equal(byAgent.status, 403);
+  for (const handle of ['Jane Doe', 'https://www.linkedin.com/sales/lead/ACwAA1,NAME_SEARCH', 'https://example.com/in/jane']) {
+    const r = await call('/api/conversations', person, 'POST', { channel: 'linkedin', handle });
+    assert.equal(r.status, 422, handle);
+  }
 });
 
 test('other channels keep their rules: an agent may still queue a Telegram reply', async () => {

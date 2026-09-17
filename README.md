@@ -35,13 +35,13 @@ WhatsApp / Telegram / Slack / LinkedIn / Email
 - Every view is a URL (`/ch/whatsapp`, `/closed`, `/c/<id>`), so back, reload and cmd-click all behave
 - One conversation per contact, closed threads reopen automatically on new inbound
 - Queued / sent / failed delivery states on every outgoing reply
-- LinkedIn messages, reply-only: the agent mirrors the LinkedIn inbox from its
-  own signed-in browser and sends only replies a person wrote here, inside
-  conversations the other person started. No new conversations, no files, no
-  messages written by the agent. LinkedIn offers no messaging API for member
-  accounts, so this runs on your account's session; automating it is against
-  LinkedIn's User Agreement and can get the account restricted, which is why the
-  channel is kept this narrow
+- LinkedIn messages, connections only: the agent mirrors the LinkedIn inbox
+  from its own signed-in browser and sends only messages a person wrote here.
+  A person can open a thread with a 1st-degree connection; each thread takes one
+  opening message, then waits for them to reply. Text only, never written by the
+  agent. LinkedIn offers no messaging API for member accounts, so this runs on
+  your account's session; automating it is against LinkedIn's User Agreement and
+  can get the account restricted, which is why the channel is kept this narrow
 - Start a conversation by searching the people app you already have — point the
   inbox at it once and pick a person instead of typing a phone number. Contacts
   link to that record rather than copying it, so your CRM stays the one place a

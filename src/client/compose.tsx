@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FileText, RefreshCw, Search, X } from "lucide-react";
+import { FileText, Info, RefreshCw, Search, X } from "lucide-react";
 import type { Conversation, Profile, ProfileSource, Template } from "./api";
 import {
   getProfileSource,
@@ -435,8 +435,15 @@ export function NewConversationDialog({
     }
   }
 
+  const linkedin = channel === "linkedin";
   const handleLabel =
-    channel === "email" ? "Email address" : channel === "whatsapp" || channel === "sms" ? "Phone number" : "Username or ID";
+    channel === "email"
+      ? "Email address"
+      : channel === "whatsapp" || channel === "sms"
+        ? "Phone number"
+        : linkedin
+          ? "LinkedIn profile URL"
+          : "Username or ID";
 
   return (
     <Dialog
@@ -449,8 +456,7 @@ export function NewConversationDialog({
           <div className="space-y-1.5">
             <SectionLabel>Channel</SectionLabel>
             <div className="flex flex-wrap gap-1.5">
-              {/* Reply-only channels (LinkedIn) start when the contact writes. */}
-              {Object.keys(CHANNELS).filter((ch) => !CHANNELS[ch].replyOnly).map((ch) => {
+              {Object.keys(CHANNELS).map((ch) => {
                 const active = ch === channel;
                 return (
                   <button
@@ -472,7 +478,7 @@ export function NewConversationDialog({
           <div className="space-y-2.5">
             <SectionLabel>Contact</SectionLabel>
 
-            {source ? (
+            {source && !linkedin ? (
               picked ? (
                 <div className="flex items-center gap-2 rounded-sm bg-sunken px-2.5 py-2">
                   <div className="min-w-0 flex-1">
@@ -553,9 +559,15 @@ export function NewConversationDialog({
                 value={handle}
                 onChange={(e) => editHandle(e.target.value)}
                 required
-                autoFocus={!source}
-                inputMode={channel === "whatsapp" || channel === "sms" ? "tel" : "text"}
-                placeholder={channel === "email" ? "person@company.com" : "+31612345678"}
+                autoFocus={!source || linkedin}
+                inputMode={channel === "whatsapp" || channel === "sms" ? "tel" : linkedin ? "url" : "text"}
+                placeholder={
+                  channel === "email"
+                    ? "person@company.com"
+                    : linkedin
+                      ? "https://www.linkedin.com/in/their-name"
+                      : "+31612345678"
+                }
                 className="input text-sm"
               />
             </div>
@@ -574,7 +586,7 @@ export function NewConversationDialog({
                   see — using it here read as though this set our own. */}
               <p className="text-xs leading-relaxed text-muted">
                 Only labels this thread in your inbox. Leave it blank and their
-                WhatsApp profile name fills it in once they reply.
+                {linkedin ? " LinkedIn" : " WhatsApp"} profile name fills it in once they reply.
               </p>
             </div>
             {channel === "email" ? (
@@ -592,6 +604,18 @@ export function NewConversationDialog({
               </div>
             ) : null}
           </div>
+
+          {linkedin ? (
+            <p className="flex items-start gap-1.5 text-[0.6875rem] leading-relaxed text-muted">
+              <Info className="mt-px size-3 shrink-0" aria-hidden />
+              <span>
+                Connections only. Your agent sends this from your LinkedIn account, and only if this
+                person is a 1st-degree connection. You get one opening message; you can write again
+                once they reply. Messaging first carries more risk of LinkedIn restricting the
+                account than replying does.
+              </span>
+            </p>
+          ) : null}
 
           {channel === "whatsapp" ? (
             <p className="flex items-start gap-1.5 text-[0.6875rem] leading-relaxed text-muted">

@@ -57,7 +57,8 @@ On a heartbeat, or when asked to "check the inbox":
 
 1. `GET /api/outbox` — each item has `message.body`, `channel`,
    `contact.handle`, `subject` (email only), and `template` (or `null`).
-2. Send it to that contact **through the channel's own tool**:
+2. Send it to that contact **through the channel's own tool** (LinkedIn: see
+   below — `opening` items go to 1st-degree connections only):
    - `template` is `null` → send `message.body` as a normal text message.
    - `template` is set → send it as a **template**, passing `template.name`,
      `template.language` and `template.variables` straight through (e.g.
@@ -67,7 +68,7 @@ On a heartbeat, or when asked to "check the inbox":
    send didn't happen. Unconfirmed items stay queued and will be handed to you
    again.
 
-## LinkedIn: reply-only, from your own browser
+## LinkedIn: connections only, from your own browser
 
 LinkedIn has no messaging API for a member account. You read and send LinkedIn
 messages in **your own browser, already signed in to the org's LinkedIn
@@ -86,13 +87,17 @@ what LinkedIn restricts, and the account is a person's.
   (`https://www.linkedin.com/in/<slug>`); never a `/sales/…` link. Use
   LinkedIn's own id for the message as `externalId`, so a re-read is harmless.
   Mirror your account's own messages in those threads as `kind: "outbound"`.
-- **Send only what the outbox gives you (Procedure 2).** Open that person's
-  existing conversation and send `message.body` as written. LinkedIn items are
+- **Send only what the outbox gives you (Procedure 2).** LinkedIn items are
   always plain text written by a person in the app. You never write a LinkedIn
-  message yourself, never start a conversation, never send a connection
-  request or InMail, and never send to anyone who is not already in a thread.
-  The app refuses to queue anything else, so an item you would have to invent a
-  thread for does not exist.
+  message yourself, never send a connection request or InMail, and never
+  message anyone the outbox did not name.
+- **An `opening: true` item goes to connections only.** It is the first message
+  in that thread. Before sending, open the person's profile and confirm they
+  are a **1st-degree connection**. If they are not — or you cannot tell — send
+  nothing and mark it
+  `{ "status": "failed", "error": "Not a LinkedIn connection" }`. Never send a
+  connection request to make it possible. The app allows one opening message
+  per thread and nothing more until the person replies.
 - **Stop at any wall.** A sign-in page, a CAPTCHA or security check, a
   "you're sending too many messages" notice, or any restriction banner: send
   nothing more this heartbeat, mark each item you could not send

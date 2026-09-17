@@ -11,11 +11,12 @@ export const CHANNELS: Record<
     icon: LucideIcon;
     brandDomain?: string;
     /**
-     * Threads start only when the contact writes, and only people reply (the
-     * server enforces both). The UI hides this channel from "New
-     * conversation" and explains a thread that has no inbound message yet.
+     * The channel speaks as a person's own account (LinkedIn): people write
+     * every message, a thread takes one opening message until the contact
+     * replies, and the agent sends openers to 1st-degree connections only.
+     * The server enforces the first two; the UI explains all three.
      */
-    replyOnly?: boolean;
+    connectionsOnly?: boolean;
   }
 > = {
   whatsapp: { label: "WhatsApp", icon: MessageCircle, brandDomain: "whatsapp.com" },
@@ -23,7 +24,7 @@ export const CHANNELS: Record<
   slack: { label: "Slack", icon: Hash, brandDomain: "slack.com" },
   email: { label: "Email", icon: Mail },
   sms: { label: "SMS", icon: MessageSquare },
-  linkedin: { label: "LinkedIn", icon: Briefcase, brandDomain: "linkedin.com", replyOnly: true },
+  linkedin: { label: "LinkedIn", icon: Briefcase, brandDomain: "linkedin.com", connectionsOnly: true },
   other: { label: "Other", icon: MessageSquare },
 };
 

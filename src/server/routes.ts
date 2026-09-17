@@ -63,15 +63,20 @@ const objectEndpoint = (id: string, label: string) =>
 const CHANNELS = ["whatsapp", "telegram", "slack", "email", "sms", "linkedin", "other"] as const;
 
 /**
- * Channels the app may only ever reply on, never open.
+ * Channels that speak as a person's own account, not as a business line.
  *
  * LinkedIn messages are read and sent by the org's agent in its own signed-in
- * browser — there is no messaging API for a member account. An agent account
- * that starts conversations at volume is exactly what LinkedIn restricts, so
- * this inbox answers people who wrote first and nothing else: a thread with no
- * inbound message cannot be replied to, and a thread cannot be started here.
+ * browser — there is no messaging API for a member account — and an account
+ * that messages people who never answer is exactly what LinkedIn restricts. So:
+ *
+ * - every message is written by a signed-in person here, never by the agent;
+ * - a thread takes ONE opening message, then nothing more until the contact
+ *   writes back (a failed send does not count, so it can be retried);
+ * - the agent sends an opening message only to a 1st-degree connection and
+ *   fails it otherwise. The app cannot see someone's connections, so that
+ *   check lives with the agent (agent.md); outbox items flag `opening`.
  */
-const REPLY_ONLY_CHANNELS = new Set<string>(["linkedin"]);
+const CONNECTION_CHANNELS = new Set<string>(["linkedin"]);
 
 /**
  * A LinkedIn member's one stable address: their public profile URL.
@@ -446,9 +451,12 @@ const OPEN_WINDOW: SendWindow = {
   lastInboundAt: null,
 };
 
-/** Reply-only channels: open once the contact has written, and it never closes. */
-const replyOnlyWindow = (lastInboundAt: string | null): SendWindow => ({
-  freeformAllowed: lastInboundAt !== null,
+/**
+ * Connection channels: open for one opening message, then shut until the
+ * contact writes; once they have, open for good.
+ */
+const connectionWindow = (lastInboundAt: string | null, openingUsed: boolean): SendWindow => ({
+  freeformAllowed: lastInboundAt !== null || !openingUsed,
   expiresAt: null,
   lastInboundAt,
 });
@@ -474,7 +482,7 @@ async function windowsFor(
   now = Date.now(),
 ): Promise<Map<string, SendWindow>> {
   const gated = (c: { channel: string }) =>
-    WINDOWED_CHANNELS.has(c.channel) || REPLY_ONLY_CHANNELS.has(c.channel);
+    WINDOWED_CHANNELS.has(c.channel) || CONNECTION_CHANNELS.has(c.channel);
   const windowed = convs.filter(gated);
   const out = new Map<string, SendWindow>(
     convs.filter((c) => !gated(c)).map((c) => [c.id, OPEN_WINDOW]),
@@ -507,10 +515,36 @@ async function windowsFor(
     );
   }
 
+  // Connection channels also need to know whether an opening message already
+  // went out (or is waiting to): anything outbound that did not fail. Our own
+  // earlier messages mirrored in by the agent count too.
+  const connection = windowed.filter((c) => CONNECTION_CHANNELS.has(c.channel));
+  const opened = new Set<string>();
+  for (let i = 0; i < connection.length; i += CHUNK) {
+    const rows = await db
+      .select({ conversationId: schema.messages.conversationId })
+      .from(schema.messages)
+      .where(
+        and(
+          eq(schema.messages.kind, "outbound"),
+          sql`coalesce(${schema.messages.status}, '') <> 'failed'`,
+          inArray(
+            schema.messages.conversationId,
+            connection.slice(i, i + CHUNK).map((c) => c.id),
+          ),
+        ),
+      )
+      .groupBy(schema.messages.conversationId);
+    for (const r of rows) opened.add(r.conversationId);
+  }
+
   const byConv = new Map(lastInbound.map((r) => [r.conversationId, r.at]));
   for (const c of windowed) {
     const last = byConv.get(c.id) ?? null;
-    out.set(c.id, REPLY_ONLY_CHANNELS.has(c.channel) ? replyOnlyWindow(last) : windowFrom(last, now));
+    out.set(
+      c.id,
+      CONNECTION_CHANNELS.has(c.channel) ? connectionWindow(last, opened.has(c.id)) : windowFrom(last, now),
+    );
   }
   return out;
 }
@@ -1425,7 +1459,7 @@ api.openapi(
     path: "/api/conversations",
     summary: "Start a conversation with a contact",
     description:
-      "Opens (or returns) the thread for one contact on one channel so a human can write first. Idempotent: an existing thread for that (channel, handle) is returned as-is, never duplicated. Sending is a separate step — POST /api/conversations/:id/reply — and the returned `window` says whether that reply may be freeform or must be a template.",
+      "Opens (or returns) the thread for one contact on one channel so a human can write first. Idempotent: an existing thread for that (channel, handle) is returned as-is, never duplicated. Sending is a separate step — POST /api/conversations/:id/reply — and the returned `window` says whether that reply may be freeform or must be a template.\n\nLinkedIn: only a signed-in person may open a thread, the handle must be a profile URL, and the thread takes one opening message until the contact replies. The agent sends it only if the person is a 1st-degree connection.",
     request: {
       body: jsonBody(
         z
@@ -1443,7 +1477,7 @@ api.openapi(
     responses: {
       200: jsonRes(ConversationSchema, "The conversation (existing or new)"),
       401: jsonRes(ErrorSchema, "No org identity"),
-      409: jsonRes(ErrorSchema, "The channel is reply-only (LinkedIn): threads start when the contact writes"),
+      403: jsonRes(ErrorSchema, "LinkedIn threads are started by a signed-in person, never by the agent"),
       422: jsonRes(ErrorSchema, "Handle has no canonical form — a phone number needs its country code"),
     },
   }),
@@ -1454,13 +1488,18 @@ api.openapi(
     const db = dbFor(c.env);
     const now = new Date().toISOString();
 
-    if (REPLY_ONLY_CHANNELS.has(input.channel)) {
-      return c.json(
-        {
-          error: `${input.channel === "linkedin" ? "LinkedIn" : input.channel} conversations can't be started here. When the person writes to you, the thread appears and you can reply.`,
-        },
-        409,
-      );
+    if (CONNECTION_CHANNELS.has(input.channel)) {
+      if (!user(c)) {
+        return c.json({ error: "Only a person can start a LinkedIn conversation." }, 403);
+      }
+      if (!canonicalHandle(input.channel, input.handle)) {
+        return c.json(
+          {
+            error: `"${input.handle}" is not a LinkedIn profile URL. Use the address of their profile, like https://www.linkedin.com/in/their-name.`,
+          },
+          422,
+        );
+      }
     }
 
     // Strict here, unlike ingest: opening a thread is the prelude to sending,
@@ -1740,7 +1779,7 @@ api.openapi(
       401: jsonRes(ErrorSchema, "No org identity"),
       403: jsonRes(ErrorSchema, "LinkedIn replies must come from a signed-in person, not the agent"),
       404: jsonRes(ErrorSchema, "Not found"),
-      409: jsonRes(ErrorSchema, "Window shut — a template is required (WhatsApp), or the contact has not written yet (LinkedIn)"),
+      409: jsonRes(ErrorSchema, "Window shut — a template is required (WhatsApp), or the opening LinkedIn message is already out and the contact has not replied"),
       422: jsonRes(ErrorSchema, "Template unknown, not approved, or missing variables"),
     },
   }),
@@ -1768,7 +1807,7 @@ api.openapi(
     // browser, so each one is written and sent by a person here: the agent
     // delivers it, it never authors it. Text only, because a file has to be
     // uploaded through LinkedIn's own page, which is a second, riskier send.
-    if (REPLY_ONLY_CHANNELS.has(conv.channel)) {
+    if (CONNECTION_CHANNELS.has(conv.channel)) {
       if (!u) {
         return c.json({ error: "LinkedIn replies must be written by a person in OpenChannels." }, 403);
       }
@@ -1862,8 +1901,8 @@ api.openapi(
       if (!w.freeformAllowed) {
         return c.json(
           {
-            error: REPLY_ONLY_CHANNELS.has(conv.channel)
-              ? "This person hasn't written to you on LinkedIn yet. OpenChannels only replies inside conversations they started."
+            error: CONNECTION_CHANNELS.has(conv.channel)
+              ? "You've already sent this person a message on LinkedIn. You can write again once they reply."
               : w.lastInboundAt === null
                 ? "This contact has never written — open the thread with an approved template."
                 : "The 24-hour window has closed — re-engage with an approved template.",
@@ -3269,6 +3308,12 @@ api.openapi(
                   channel: z.string(),
                   contact: ContactSchema,
                   subject: z.string().nullable(),
+                  /**
+                   * LinkedIn: true when the contact has never written in this
+                   * thread. Send it only to a 1st-degree connection; otherwise
+                   * mark it failed ("Not a LinkedIn connection").
+                   */
+                  opening: z.boolean(),
                   /** Present ⇒ send via the template API, not as text. */
                   template: z
                     .object({
@@ -3302,11 +3347,15 @@ api.openapi(
       .orderBy(asc(schema.messages.createdAt))
       .limit(limit);
 
+    const convs = [...new Map(rows.map((r) => [r.conv.id, r.conv])).values()];
+    const windows = await windowsFor(db, convs.filter((cv) => CONNECTION_CHANNELS.has(cv.channel)));
+
     return c.json(
       {
         items: rows.map((r) => ({
           message: toMessage(r.message),
           channel: r.conv.channel,
+          opening: CONNECTION_CHANNELS.has(r.conv.channel) && !windows.get(r.conv.id)?.lastInboundAt,
           subject: r.conv.subject,
           contact: toContact(r.contact),
           template: r.message.templateName
