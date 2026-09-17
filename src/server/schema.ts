@@ -19,7 +19,7 @@ export const contacts = sqliteTable(
   {
     id: text("id").primaryKey().$default(() => crypto.randomUUID()),
     orgId: text("org_id").notNull(),
-    /** Channel this contact lives on: whatsapp | telegram | slack | email | sms | other */
+    /** Channel this contact lives on: whatsapp | telegram | slack | email | sms | linkedin | other */
     channel: text("channel").notNull(),
     /** Channel-native address: phone number, email address, @username, member id. */
     handle: text("handle").notNull(),
@@ -229,6 +229,15 @@ export const messages = sqliteTable(
     /** JSON object of placeholder token → value, e.g. {"1":"Kara"}. */
     templateVariables: text("template_variables"),
     createdAt: text("created_at").notNull().$default(() => new Date().toISOString()),
+    /**
+     * When the message actually left, as opposed to when it was queued: set
+     * when the agent confirms a send, or from the original time of a message
+     * the agent mirrored in as already sent. The LinkedIn daily limits count on
+     * this, because a message can sit in the queue for days.
+     */
+    sentAt: text("sent_at"),
+    /** 1 when a person queued this as the first message in a thread nobody had answered (LinkedIn). */
+    opening: integer("opening").notNull().default(0),
   },
   (t) => ({
     byConversation: index("messages_by_conversation").on(t.conversationId, t.createdAt),

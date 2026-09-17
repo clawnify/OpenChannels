@@ -394,8 +394,14 @@ export function ThreadPane({
   const contact = conversation.contact;
   const closed = conversation.status === "closed";
   const channelLabel = channelMeta(conversation.channel).label;
+  const connectionsOnly = !!channelMeta(conversation.channel).connectionsOnly;
   /** Notes are always freeform — only an outbound reply is window-gated. */
-  const templateOnly = mode === "reply" && !conversation.window.freeformAllowed;
+  const templateOnly = mode === "reply" && !conversation.window.freeformAllowed && !connectionsOnly;
+  /** The opening message already went out and the contact hasn't answered. */
+  const awaitingContact = mode === "reply" && !conversation.window.freeformAllowed && connectionsOnly;
+  /** Nobody has written yet: whatever is sent now is the one opening message. */
+  const openingMessage =
+    mode === "reply" && connectionsOnly && conversation.window.freeformAllowed && !conversation.window.lastInboundAt;
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
@@ -418,7 +424,9 @@ export function ThreadPane({
               {contactLabel(contact)}
             </h1>
             <ChannelChip channel={conversation.channel} />
-            {conversation.window.freeformAllowed ? null : (
+            {conversation.window.freeformAllowed ? null : connectionsOnly ? (
+              <span className="badge badge-warning">Waiting for them to write</span>
+            ) : (
               <span className="badge badge-warning">
                 <FileText className="size-3" aria-hidden />
                 Template only
@@ -527,7 +535,11 @@ export function ThreadPane({
             )}
           </div>
 
-          {templateOnly ? (
+          {awaitingContact ? (
+            <p className="px-3 py-3 text-[0.8125rem] leading-[1.45] text-muted">
+              {`You've already messaged ${contactLabel(contact)} on ${channelLabel}. You can write again once they reply.`}
+            </p>
+          ) : templateOnly ? (
             <div className="px-3 py-3">
               <p className="mb-3 flex items-start gap-1.5 text-[0.8125rem] leading-[1.45] text-muted">
                 <FileText className="mt-0.5 size-3.5 shrink-0" aria-hidden />
@@ -545,6 +557,11 @@ export function ThreadPane({
             </div>
           ) : (
             <>
+              {openingMessage ? (
+                <p className="border-b border-border bg-sunken px-3 py-1.5 text-[0.75rem] leading-[1.45] text-muted">
+                  {`Opening message: sent only if ${contactLabel(contact)} is a 1st-degree connection. After this you can write again once they reply.`}
+                </p>
+              ) : null}
               {attached && mode === "reply" ? (
             <div className="flex items-center justify-between gap-2 border-b border-border bg-sunken px-3 py-1.5">
               <span className="inline-flex min-w-0 items-center gap-1.5 text-[0.75rem] text-muted">
@@ -587,9 +604,10 @@ export function ThreadPane({
               ) : null}
               <div className="flex items-center justify-between px-3 pb-2.5">
                 <div className="flex items-center gap-1.5">
-                {/* Attach is a reply-mode affordance: notes are internal, and
-                    the template path has no attachment field. */}
-                {mode === "reply" && !templateOnly ? (
+                {/* Attach is a reply-mode affordance: notes are internal, the
+                    template path has no attachment field, and connection
+                    channels (LinkedIn) take text only. */}
+                {mode === "reply" && !templateOnly && !connectionsOnly ? (
                   <>
                     <input
                       ref={fileInputRef}
