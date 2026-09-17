@@ -105,6 +105,11 @@ what LinkedIn restricts, and the account is a person's.
   user. Never retry through it or work around it.
 - **Pace.** A few messages per heartbeat at most, with pauses between them.
   Anything left stays queued for the next one.
+- **Daily limits are the app's job.** The outbox holds back LinkedIn items once
+  the account has sent its daily share (50 messages and 20 opening messages
+  over a rolling 24 hours, unless the org changed them). An empty outbox means
+  wait, not a fault; never send LinkedIn messages from anywhere else to catch
+  up. Always confirm `sent` promptly: the limits count confirmed sends.
 
 ## The 24-hour window (why some threads are template-only)
 

@@ -39,7 +39,10 @@ WhatsApp / Telegram / Slack / LinkedIn / Email
   from its own signed-in browser and sends only messages a person wrote here.
   A person can open a thread with a 1st-degree connection; each thread takes one
   opening message, then waits for them to reply. Text only, never written by the
-  agent. LinkedIn offers no messaging API for member accounts, so this runs on
+  agent. Daily limits (50 messages, 20 opening messages per rolling 24 hours,
+  adjustable with `LINKEDIN_DAILY_MESSAGES` / `LINKEDIN_DAILY_OPENERS`) hold
+  anything beyond them in the queue until there is room. LinkedIn offers no
+  messaging API for member accounts, so this runs on
   your account's session; automating it is against LinkedIn's User Agreement and
   can get the account restricted, which is why the channel is kept this narrow
 - Start a conversation by searching the people app you already have — point the

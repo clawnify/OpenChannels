@@ -63,7 +63,9 @@ CREATE TABLE IF NOT EXISTS `messages` (
 	`template_name` text,
 	`template_language` text,
 	`template_variables` text,
-	`created_at` text NOT NULL
+	`created_at` text NOT NULL,
+	`sent_at` text,
+	`opening` integer DEFAULT 0 NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS `messages_by_conversation` ON `messages` (`conversation_id`,`created_at`);
