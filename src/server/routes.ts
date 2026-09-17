@@ -23,6 +23,9 @@ type Env = {
     UPLOADS?: R2Bucket;
     /** Integration-owned WABA configuration, injected at deployment. */
     WHATSAPP_BUSINESS_WABA_ID?: string;
+    /** Override the LinkedIn daily limits (messages / opening messages per rolling day). */
+    LINKEDIN_DAILY_MESSAGES?: string;
+    LINKEDIN_DAILY_OPENERS?: string;
   };
 };
 const api = new OpenAPIHono<Env>();
@@ -77,6 +80,48 @@ const CHANNELS = ["whatsapp", "telegram", "slack", "email", "sms", "linkedin", "
  *   check lives with the agent (agent.md); outbox items flag `opening`.
  */
 const CONNECTION_CHANNELS = new Set<string>(["linkedin"]);
+
+/**
+ * Daily limits on what one org sends through its LinkedIn account, over a
+ * rolling 24 hours. A restriction lands on a real person's account, so the app
+ * enforces these itself rather than trusting whoever queues. Defaults sit at the
+ * cautious end of what LinkedIn automation vendors publish; an org can lower or
+ * raise them with the LINKEDIN_DAILY_MESSAGES / LINKEDIN_DAILY_OPENERS vars.
+ * Everything that left the account counts, including messages a person sent on
+ * LinkedIn directly and the agent mirrored in.
+ */
+const LINKEDIN_DAILY_MESSAGES = 50;
+const LINKEDIN_DAILY_OPENERS = 20;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const limitFrom = (raw: string | undefined, fallback: number) => {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+};
+
+/** What the org may still send on LinkedIn right now, in this rolling day. */
+async function linkedinBudget(db: DB, env: Env["Bindings"], org: string, now = Date.now()) {
+  const since = new Date(now - DAY_MS).toISOString();
+  const [row] = await db
+    .select({
+      messages: count(),
+      openers: sql<number>`coalesce(sum(${schema.messages.opening}), 0)`,
+    })
+    .from(schema.messages)
+    .innerJoin(schema.conversations, eq(schema.messages.conversationId, schema.conversations.id))
+    .where(
+      and(
+        eq(schema.messages.orgId, org),
+        eq(schema.conversations.channel, "linkedin"),
+        eq(schema.messages.kind, "outbound"),
+        sql`${schema.messages.sentAt} >= ${since}`,
+      ),
+    );
+  return {
+    messages: Math.max(0, limitFrom(env.LINKEDIN_DAILY_MESSAGES, LINKEDIN_DAILY_MESSAGES) - Number(row?.messages ?? 0)),
+    openers: Math.max(0, limitFrom(env.LINKEDIN_DAILY_OPENERS, LINKEDIN_DAILY_OPENERS) - Number(row?.openers ?? 0)),
+  };
+}
 
 /**
  * A LinkedIn member's one stable address: their public profile URL.
@@ -1011,6 +1056,7 @@ api.openapi(
         body: input.message.body,
         authorName: input.message.authorName ?? (inbound ? contact.name ?? contact.handle : "Agent"),
         status: inbound ? null : "sent",
+        sentAt: inbound ? null : at,
         externalId: input.message.externalId ?? null,
         mediaRef,
         mediaType: (mediaRef && input.message.media?.type?.trim()) || null,
@@ -1854,6 +1900,7 @@ api.openapi(
     }
 
     let body: string;
+    let opening = false;
     let templateFields: {
       templateName: string | null;
       templateLanguage: string | null;
@@ -1911,6 +1958,7 @@ api.openapi(
         );
       }
       body = input.body ?? "";
+      opening = CONNECTION_CHANNELS.has(conv.channel) && !w.lastInboundAt;
     }
 
     // Send now when the app can reach the channel; otherwise queue for the
@@ -1981,6 +2029,7 @@ api.openapi(
         mediaMime: attachment?.mime ?? null,
         mediaName: attachment?.name ?? null,
         ...templateFields,
+        opening: opening ? 1 : 0,
         createdAt: now,
       })
       .returning();
@@ -3293,7 +3342,7 @@ api.openapi(
     path: "/api/outbox",
     summary: "Queued replies waiting to be sent (agent only)",
     description:
-      "Outbound messages with status=queued, oldest first, with the channel and contact handle to send to. After sending each one through the channel, confirm with POST /api/messages/:id/status.\n\nWhen an item carries `template`, send it through the channel's TEMPLATE API with that exact name/language/variables — do NOT send `message.body` as text. The body is the rendered preview for humans; sending it as freeform is what the template exists to avoid and the provider will reject it outside the 24-hour window.\n\nWhen `message.mediaKey` is set the message carries a file: the public URL to send it by is `<app origin>/api/media/<mediaKey>` (it must be sent as a media message, not as text), with `message.mediaType` as the WhatsApp message type and `message.body` as the caption.",
+      "Outbound messages with status=queued, oldest first, with the channel and contact handle to send to. LinkedIn items beyond the org's daily limits (messages and opening messages per rolling 24 hours) are held back until there is room; they stay queued. After sending each one through the channel, confirm with POST /api/messages/:id/status.\n\nWhen an item carries `template`, send it through the channel's TEMPLATE API with that exact name/language/variables — do NOT send `message.body` as text. The body is the rendered preview for humans; sending it as freeform is what the template exists to avoid and the provider will reject it outside the 24-hour window.\n\nWhen `message.mediaKey` is set the message carries a file: the public URL to send it by is `<app origin>/api/media/<mediaKey>` (it must be sent as a media message, not as text), with `message.mediaType` as the WhatsApp message type and `message.body` as the caption.",
     request: {
       query: z.object({ limit: z.coerce.number().int().min(1).max(50).default(25) }),
     },
@@ -3350,9 +3399,22 @@ api.openapi(
     const convs = [...new Map(rows.map((r) => [r.conv.id, r.conv])).values()];
     const windows = await windowsFor(db, convs.filter((cv) => CONNECTION_CHANNELS.has(cv.channel)));
 
+    // LinkedIn items past the org's daily limits are held back, not failed:
+    // they stay queued and come out once the rolling day frees up room.
+    let budget = rows.some((r) => CONNECTION_CHANNELS.has(r.conv.channel))
+      ? await linkedinBudget(db, c.env, org)
+      : { messages: 0, openers: 0 };
+    const handed = rows.filter((r) => {
+      if (!CONNECTION_CHANNELS.has(r.conv.channel)) return true;
+      const isOpener = !windows.get(r.conv.id)?.lastInboundAt;
+      if (budget.messages < 1 || (isOpener && budget.openers < 1)) return false;
+      budget = { messages: budget.messages - 1, openers: budget.openers - (isOpener ? 1 : 0) };
+      return true;
+    });
+
     return c.json(
       {
-        items: rows.map((r) => ({
+        items: handed.map((r) => ({
           message: toMessage(r.message),
           channel: r.conv.channel,
           opening: CONNECTION_CHANNELS.has(r.conv.channel) && !windows.get(r.conv.id)?.lastInboundAt,
@@ -3440,7 +3502,12 @@ api.openapi(
 
     const [row] = await db
       .update(schema.messages)
-      .set({ status: body.status, error: body.status === "failed" ? body.error ?? "send failed" : null })
+      .set({
+        status: body.status,
+        error: body.status === "failed" ? body.error ?? "send failed" : null,
+        // When it actually left; the LinkedIn daily limits count on this.
+        ...(body.status === "sent" ? { sentAt: sql`coalesce(${schema.messages.sentAt}, ${new Date().toISOString()})` } : {}),
+      })
       .where(and(eq(schema.messages.orgId, org), eq(schema.messages.id, id)))
       .returning({ id: schema.messages.id, conversationId: schema.messages.conversationId });
     if (!row) return c.json({ error: "not found" }, 404);
