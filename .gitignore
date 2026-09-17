@@ -9,6 +9,9 @@ data.db
 data.db-wal
 data.db-shm
 
+# generated from skills/linkedin-sync/SKILL.md by scripts/build-linkedin-skill.mjs
+src/server/linkedin-skill.gen.ts
+
 # local AI assistant files — not part of the published template
 CLAUDE.md
 .claude/

@@ -70,6 +70,13 @@ On a heartbeat, or when asked to "check the inbox":
 
 ## LinkedIn: connections only, from your own browser
 
+When the org turns on **LinkedIn sync** in the app, you receive a scheduled task
+carrying the full procedure (the `linkedin-sync` skill). Follow that task: it
+opens a run with `POST /api/linkedin-sync/runs`, does the mirroring and sending
+below, and closes the run with `PATCH /api/linkedin-sync/runs/{id}`. A 409 or
+410 when opening a run means stop. Never create, change or pause that schedule
+yourself; people do that in the app.
+
 LinkedIn has no messaging API for a member account. You read and send LinkedIn
 messages in **your own browser, already signed in to the org's LinkedIn
 account** — the same session you use for anything else on LinkedIn. The rules

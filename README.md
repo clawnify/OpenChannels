@@ -45,6 +45,9 @@ WhatsApp / Telegram / Slack / LinkedIn / Email
   messaging API for member accounts, so this runs on
   your account's session; automating it is against LinkedIn's User Agreement and
   can get the account restricted, which is why the channel is kept this narrow
+- LinkedIn sync schedule: pick the agent and how often (office hours by
+  default), and the app creates that one schedule on your agent. Off until you
+  turn it on, one run at a time, with each run's result listed in the app
 - Start a conversation by searching the people app you already have — point the
   inbox at it once and pick a person instead of typing a phone number. Contacts
   link to that record rather than copying it, so your CRM stays the one place a

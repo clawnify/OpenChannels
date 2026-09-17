@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { NewConversationDialog } from "./compose";
 import { WhatsAppSetup } from "./setup";
+import { LinkedInSyncSetup } from "./linkedin-sync";
 import { ThreadPane } from "./thread";
 import { Avatar, SectionLabel, CHANNELS, channelClass, channelMeta, timeAgo } from "./ui";
 
@@ -26,7 +27,8 @@ type Filter =
   | { kind: "unassigned" }
   | { kind: "channel"; channel: string }
   | { kind: "closed" }
-  | { kind: "setup" };
+  | { kind: "setup" }
+  | { kind: "linkedin-sync" };
 
 /**
  * How a channel draws in the navigation.
@@ -65,6 +67,8 @@ function filterPath(filter: Filter): string {
       return "/closed";
     case "setup":
       return "/setup";
+    case "linkedin-sync":
+      return "/linkedin-sync";
     default:
       return "/";
   }
@@ -76,6 +80,7 @@ function filterFromId(id: string): Filter {
   if (id === "unassigned") return { kind: "unassigned" };
   if (id === "closed") return { kind: "closed" };
   if (id === "setup") return { kind: "setup" };
+  if (id === "linkedin-sync") return { kind: "linkedin-sync" };
   return { kind: "all" };
 }
 
@@ -166,6 +171,7 @@ function filterFromPath(): Filter {
   if (channel) return { kind: "channel", channel: decodeURIComponent(channel[1]) };
   if (path === "/closed") return { kind: "closed" };
   if (path === "/setup") return { kind: "setup" };
+  if (path === "/linkedin-sync") return { kind: "linkedin-sync" };
   return { kind: "all" };
 }
 
@@ -275,8 +281,8 @@ export function App() {
   }, [search]);
 
   const load = useCallback(async () => {
-    // Setup is not a conversation view — don't poll the inbox behind it.
-    if (filter.kind === "setup") return;
+    // Settings pages are not conversation views — don't poll the inbox behind them.
+    if (filter.kind === "setup" || filter.kind === "linkedin-sync") return;
     const params = {
       status: filter.kind === "closed" ? "closed" : "open",
       channel: filter.kind === "channel" ? filter.channel : undefined,
@@ -415,6 +421,7 @@ export function App() {
         { id: "unassigned", label: "Unassigned", href: "/unassigned", icon: "users", count: stats?.unassigned },
         { id: "closed", label: "Closed", href: "/closed", icon: "archive" },
         { id: "setup", label: "WhatsApp setup", href: "/setup", icon: "settings" },
+        { id: "linkedin-sync", label: "LinkedIn sync", href: "/linkedin-sync", icon: "briefcase", color: "blue" as const },
       ],
     },
   ];
@@ -438,6 +445,15 @@ export function App() {
       <div className={shell}>
         {nav}
         <WhatsAppSetup />
+      </div>
+    );
+  }
+
+  if (filter.kind === "linkedin-sync") {
+    return (
+      <div className={shell}>
+        {nav}
+        <LinkedInSyncSetup />
       </div>
     );
   }

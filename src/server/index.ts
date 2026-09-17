@@ -1,5 +1,6 @@
 import { createApp } from "@clawnify/app";
 import api from "./routes";
+import { linkedinSync } from "./linkedin-sync";
 
 type Env = { Bindings: { DB: D1Database } };
 
@@ -10,5 +11,6 @@ type Env = { Bindings: { DB: D1Database } };
 const app = createApp<Env>({ title: "OpenChannels", version: "1.0.0", db: false });
 
 app.route("/", api);
+app.route("/", linkedinSync);
 
 export default app;
