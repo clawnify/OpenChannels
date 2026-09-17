@@ -370,3 +370,58 @@ export const patchConversation = (
 /** Substring search over every message body in the org, newest first. */
 export const searchMessages = (q: string, limit = 20): Promise<{ items: SearchHit[] }> =>
   request(`/api/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+
+/* ------------------------------ LinkedIn sync ------------------------------ */
+
+export interface LinkedInSyncRun {
+  id: string;
+  status: "running" | "done" | "failed";
+  mirrored: number | null;
+  sent: number | null;
+  failed: number | null;
+  error: string;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface LinkedInSyncState {
+  /** Null until someone sets sync up. */
+  sync: {
+    serverId: string;
+    cadence: string;
+    timezone: string;
+    active: boolean;
+    /** True once the schedule exists on the agent. */
+    scheduled: boolean;
+    /** Last problem talking to the agent's scheduler, if it has not cleared. */
+    scheduleError: string | null;
+    nextRunAt: string | null;
+  } | null;
+  runs: LinkedInSyncRun[];
+  cadences: { key: string; label: string }[];
+}
+
+export interface AgentOption {
+  id: string;
+  name: string | null;
+  status: string | null;
+}
+
+export const getLinkedInSync = (): Promise<LinkedInSyncState> => request("/api/linkedin-sync");
+
+export const listSyncAgents = (): Promise<{ agents: AgentOption[] }> => request("/api/linkedin-sync/agents");
+
+export const saveLinkedInSync = (input: {
+  serverId: string;
+  cadence: string;
+  timezone: string;
+  active: boolean;
+}): Promise<LinkedInSyncState> =>
+  request("/api/linkedin-sync", { method: "PUT", body: JSON.stringify(input) });
+
+export const removeLinkedInSync = (): Promise<{ ok: true }> =>
+  request("/api/linkedin-sync", { method: "DELETE" });
+
+/** `id` is kept by the caller and reused on retry, so one click dispatches once. */
+export const runLinkedInSyncNow = (id: string): Promise<{ dispatched: true }> =>
+  request("/api/linkedin-sync/run-now", { method: "POST", body: JSON.stringify({ id }) });

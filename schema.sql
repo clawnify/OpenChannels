@@ -95,3 +95,29 @@ CREATE TABLE IF NOT EXISTS `templates` (
 
 CREATE UNIQUE INDEX IF NOT EXISTS `templates_by_org_channel_name_language` ON `templates` (`org_id`,`channel`,`name`,`language`);
 CREATE INDEX IF NOT EXISTS `templates_by_org_channel` ON `templates` (`org_id`,`channel`,`status`);
+CREATE TABLE IF NOT EXISTS `linkedin_sync` (
+	`org_id` text PRIMARY KEY NOT NULL,
+	`server_id` text NOT NULL,
+	`cadence` text NOT NULL,
+	`timezone` text NOT NULL,
+	`active` integer DEFAULT 0 NOT NULL,
+	`schedule_id` text,
+	`schedule_error` text,
+	`setup_id` text NOT NULL,
+	`updated_at` text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS `linkedin_sync_runs` (
+	`id` text PRIMARY KEY NOT NULL,
+	`org_id` text NOT NULL,
+	`status` text DEFAULT 'running' NOT NULL,
+	`mirrored` integer,
+	`sent` integer,
+	`failed` integer,
+	`error` text DEFAULT '' NOT NULL,
+	`started_at` text NOT NULL,
+	`finished_at` text
+);
+
+CREATE INDEX IF NOT EXISTS `linkedin_sync_runs_by_org` ON `linkedin_sync_runs` (`org_id`,`started_at`);
+CREATE UNIQUE INDEX IF NOT EXISTS `linkedin_sync_one_running` ON `linkedin_sync_runs` (`org_id`) WHERE `status` = 'running';
