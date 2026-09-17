@@ -19,7 +19,7 @@ export const contacts = sqliteTable(
   {
     id: text("id").primaryKey().$default(() => crypto.randomUUID()),
     orgId: text("org_id").notNull(),
-    /** Channel this contact lives on: whatsapp | telegram | slack | email | sms | other */
+    /** Channel this contact lives on: whatsapp | telegram | slack | email | sms | linkedin | other */
     channel: text("channel").notNull(),
     /** Channel-native address: phone number, email address, @username, member id. */
     handle: text("handle").notNull(),

@@ -60,7 +60,49 @@ const objectEndpoint = (id: string, label: string) =>
 
 /* ---------------------------------- shapes --------------------------------- */
 
-const CHANNELS = ["whatsapp", "telegram", "slack", "email", "sms", "other"] as const;
+const CHANNELS = ["whatsapp", "telegram", "slack", "email", "sms", "linkedin", "other"] as const;
+
+/**
+ * Channels the app may only ever reply on, never open.
+ *
+ * LinkedIn messages are read and sent by the org's agent in its own signed-in
+ * browser — there is no messaging API for a member account. An agent account
+ * that starts conversations at volume is exactly what LinkedIn restricts, so
+ * this inbox answers people who wrote first and nothing else: a thread with no
+ * inbound message cannot be replied to, and a thread cannot be started here.
+ */
+const REPLY_ONLY_CHANNELS = new Set<string>(["linkedin"]);
+
+/**
+ * A LinkedIn member's one stable address: their public profile URL.
+ *
+ *   "linkedin.com/in/Jane-Doe/"             → "https://www.linkedin.com/in/jane-doe"
+ *   "https://nl.linkedin.com/in/jane-doe?x" → "https://www.linkedin.com/in/jane-doe"
+ *   "https://www.linkedin.com/sales/lead/…" → null   only opens for a signed-in seat
+ *
+ * Returns null for anything that is not a /in/ profile, so a thread can never
+ * be keyed on a link that changes with whoever is looking at it.
+ */
+function linkedinProfile(raw: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+  } catch {
+    return null;
+  }
+  if (!/(^|\.)linkedin\.com$/i.test(url.hostname)) return null;
+  const m = /^\/in\/([^/]+)\/?$/.exec(url.pathname);
+  if (!m) return null;
+  let slug: string;
+  try {
+    slug = decodeURIComponent(m[1]);
+  } catch {
+    return null;
+  }
+  slug = slug.trim().toLowerCase();
+  if (!slug) return null;
+  return `https://www.linkedin.com/in/${encodeURIComponent(slug)}`;
+}
 
 /** Channels whose handle is a phone number, and so has one canonical spelling. */
 const PHONE_CHANNELS = new Set<string>(["whatsapp", "sms"]);
@@ -89,6 +131,7 @@ function canonicalHandle(channel: string, handle: string): string | null {
   const raw = handle.trim();
   if (!raw) return null;
   if (channel === "email") return raw.toLowerCase();
+  if (channel === "linkedin") return linkedinProfile(raw);
   if (!PHONE_CHANNELS.has(channel)) return raw;
 
   let digits = raw.replace(/\D/g, "");
@@ -403,6 +446,13 @@ const OPEN_WINDOW: SendWindow = {
   lastInboundAt: null,
 };
 
+/** Reply-only channels: open once the contact has written, and it never closes. */
+const replyOnlyWindow = (lastInboundAt: string | null): SendWindow => ({
+  freeformAllowed: lastInboundAt !== null,
+  expiresAt: null,
+  lastInboundAt,
+});
+
 const windowFrom = (lastInboundAt: string | null, now: number): SendWindow => {
   if (!lastInboundAt) return { freeformAllowed: false, expiresAt: null, lastInboundAt: null };
   const closesAt = new Date(lastInboundAt).getTime() + WINDOW_MS;
@@ -423,9 +473,11 @@ async function windowsFor(
   convs: (typeof schema.conversations.$inferSelect)[],
   now = Date.now(),
 ): Promise<Map<string, SendWindow>> {
-  const windowed = convs.filter((c) => WINDOWED_CHANNELS.has(c.channel));
+  const gated = (c: { channel: string }) =>
+    WINDOWED_CHANNELS.has(c.channel) || REPLY_ONLY_CHANNELS.has(c.channel);
+  const windowed = convs.filter(gated);
   const out = new Map<string, SendWindow>(
-    convs.filter((c) => !WINDOWED_CHANNELS.has(c.channel)).map((c) => [c.id, OPEN_WINDOW]),
+    convs.filter((c) => !gated(c)).map((c) => [c.id, OPEN_WINDOW]),
   );
   if (windowed.length === 0) return out;
 
@@ -456,7 +508,10 @@ async function windowsFor(
   }
 
   const byConv = new Map(lastInbound.map((r) => [r.conversationId, r.at]));
-  for (const c of windowed) out.set(c.id, windowFrom(byConv.get(c.id) ?? null, now));
+  for (const c of windowed) {
+    const last = byConv.get(c.id) ?? null;
+    out.set(c.id, REPLY_ONLY_CHANNELS.has(c.channel) ? replyOnlyWindow(last) : windowFrom(last, now));
+  }
   return out;
 }
 
@@ -1388,6 +1443,7 @@ api.openapi(
     responses: {
       200: jsonRes(ConversationSchema, "The conversation (existing or new)"),
       401: jsonRes(ErrorSchema, "No org identity"),
+      409: jsonRes(ErrorSchema, "The channel is reply-only (LinkedIn): threads start when the contact writes"),
       422: jsonRes(ErrorSchema, "Handle has no canonical form — a phone number needs its country code"),
     },
   }),
@@ -1397,6 +1453,15 @@ api.openapi(
     const input = c.req.valid("json");
     const db = dbFor(c.env);
     const now = new Date().toISOString();
+
+    if (REPLY_ONLY_CHANNELS.has(input.channel)) {
+      return c.json(
+        {
+          error: `${input.channel === "linkedin" ? "LinkedIn" : input.channel} conversations can't be started here. When the person writes to you, the thread appears and you can reply.`,
+        },
+        409,
+      );
+    }
 
     // Strict here, unlike ingest: opening a thread is the prelude to sending,
     // and a handle with no canonical form has no country code — the provider
@@ -1673,8 +1738,9 @@ api.openapi(
       201: jsonRes(MessageSchema, "The queued outbound message"),
       400: jsonRes(ErrorSchema, "Send exactly one of body or template"),
       401: jsonRes(ErrorSchema, "No org identity"),
+      403: jsonRes(ErrorSchema, "LinkedIn replies must come from a signed-in person, not the agent"),
       404: jsonRes(ErrorSchema, "Not found"),
-      409: jsonRes(ErrorSchema, "Window shut — a template is required"),
+      409: jsonRes(ErrorSchema, "Window shut — a template is required (WhatsApp), or the contact has not written yet (LinkedIn)"),
       422: jsonRes(ErrorSchema, "Template unknown, not approved, or missing variables"),
     },
   }),
@@ -1697,6 +1763,19 @@ api.openapi(
     const u = user(c);
     const db = dbFor(c.env);
     const now = new Date().toISOString();
+
+    // Every LinkedIn message leaves from a person's account in the agent's
+    // browser, so each one is written and sent by a person here: the agent
+    // delivers it, it never authors it. Text only, because a file has to be
+    // uploaded through LinkedIn's own page, which is a second, riskier send.
+    if (REPLY_ONLY_CHANNELS.has(conv.channel)) {
+      if (!u) {
+        return c.json({ error: "LinkedIn replies must be written by a person in OpenChannels." }, 403);
+      }
+      if (input.attachment || input.template) {
+        return c.json({ error: "LinkedIn replies are text only." }, 400);
+      }
+    }
 
     // Only this app's own stored files may be attached, and only ones uploaded
     // through the composer (att/*). Handing Meta an arbitrary URL is a fetch
@@ -1783,8 +1862,9 @@ api.openapi(
       if (!w.freeformAllowed) {
         return c.json(
           {
-            error:
-              w.lastInboundAt === null
+            error: REPLY_ONLY_CHANNELS.has(conv.channel)
+              ? "This person hasn't written to you on LinkedIn yet. OpenChannels only replies inside conversations they started."
+              : w.lastInboundAt === null
                 ? "This contact has never written — open the thread with an approved template."
                 : "The 24-hour window has closed — re-engage with an approved template.",
           },

@@ -36,9 +36,10 @@ Whenever a message arrives on (or is sent from) a channel you manage, and once
 per conversation when backfilling history:
 
 1. `POST /api/ingest` with:
-   - `channel`: `whatsapp` | `telegram` | `slack` | `email` | `sms` | `other`
+   - `channel`: `whatsapp` | `telegram` | `slack` | `email` | `sms` | `linkedin` | `other`
    - `contact`: `{ handle, name? }` — the channel-native address (phone, email,
-     @username) and display name if known
+     @username; for LinkedIn the public profile URL, `linkedin.com/in/<slug>`)
+     and display name if known
    - `message`: `{ kind: "inbound" | "outbound", body, externalId?, at? }` —
      `externalId` is the channel's own message id (repeats are dropped, so
      re-ingesting is always safe); `at` is the original ISO timestamp for
@@ -65,6 +66,40 @@ On a heartbeat, or when asked to "check the inbox":
    `{ "status": "sent" }`, or `{ "status": "failed", "error": "<why>" }` if the
    send didn't happen. Unconfirmed items stay queued and will be handed to you
    again.
+
+## LinkedIn: reply-only, from your own browser
+
+LinkedIn has no messaging API for a member account. You read and send LinkedIn
+messages in **your own browser, already signed in to the org's LinkedIn
+account** — the same session you use for anything else on LinkedIn. The rules
+are stricter than on other channels, because an account that looks automated is
+what LinkedIn restricts, and the account is a person's.
+
+- **Stay inside your browser session.** Work through the pages, or through the
+  requests LinkedIn's own messaging page makes, from inside that page. Never
+  copy the session cookie out, never store or send it anywhere, never sign in
+  with a password, and never install a library that does any of that. If you
+  are signed out, stop and report it.
+- **Mirror (Procedure 1), at a person's pace.** On each heartbeat, open the
+  messaging inbox and ingest only messages newer than the last one you
+  mirrored. `contact.handle` is the member's public profile URL
+  (`https://www.linkedin.com/in/<slug>`); never a `/sales/…` link. Use
+  LinkedIn's own id for the message as `externalId`, so a re-read is harmless.
+  Mirror your account's own messages in those threads as `kind: "outbound"`.
+- **Send only what the outbox gives you (Procedure 2).** Open that person's
+  existing conversation and send `message.body` as written. LinkedIn items are
+  always plain text written by a person in the app. You never write a LinkedIn
+  message yourself, never start a conversation, never send a connection
+  request or InMail, and never send to anyone who is not already in a thread.
+  The app refuses to queue anything else, so an item you would have to invent a
+  thread for does not exist.
+- **Stop at any wall.** A sign-in page, a CAPTCHA or security check, a
+  "you're sending too many messages" notice, or any restriction banner: send
+  nothing more this heartbeat, mark each item you could not send
+  `{ "status": "failed", "error": "<what LinkedIn showed>" }`, and tell the
+  user. Never retry through it or work around it.
+- **Pace.** A few messages per heartbeat at most, with pauses between them.
+  Anything left stays queued for the next one.
 
 ## The 24-hour window (why some threads are template-only)
 

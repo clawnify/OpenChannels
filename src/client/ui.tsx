@@ -1,15 +1,29 @@
 import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Hash, Mail, MessageCircle, MessageSquare, Send } from "lucide-react";
+import { Briefcase, Hash, Mail, MessageCircle, MessageSquare, Send } from "lucide-react";
 import { logoUrl } from "@clawnify/logokit";
 import type { Contact } from "./api";
 
-export const CHANNELS: Record<string, { label: string; icon: LucideIcon; brandDomain?: string }> = {
+export const CHANNELS: Record<
+  string,
+  {
+    label: string;
+    icon: LucideIcon;
+    brandDomain?: string;
+    /**
+     * Threads start only when the contact writes, and only people reply (the
+     * server enforces both). The UI hides this channel from "New
+     * conversation" and explains a thread that has no inbound message yet.
+     */
+    replyOnly?: boolean;
+  }
+> = {
   whatsapp: { label: "WhatsApp", icon: MessageCircle, brandDomain: "whatsapp.com" },
   telegram: { label: "Telegram", icon: Send, brandDomain: "telegram.org" },
   slack: { label: "Slack", icon: Hash, brandDomain: "slack.com" },
   email: { label: "Email", icon: Mail },
   sms: { label: "SMS", icon: MessageSquare },
+  linkedin: { label: "LinkedIn", icon: Briefcase, brandDomain: "linkedin.com", replyOnly: true },
   other: { label: "Other", icon: MessageSquare },
 };
 

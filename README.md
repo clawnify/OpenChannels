@@ -7,7 +7,7 @@
 
 # OpenChannels
 
-**Every conversation your AI employee handles — WhatsApp, Telegram, Slack, email — in one inbox.**
+**Every conversation your AI employee handles — WhatsApp, Telegram, Slack, LinkedIn, email — in one inbox.**
 
 [![Deploy to Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/OpenChannels)
 
@@ -16,7 +16,7 @@ An open-source shared inbox built for teams whose first responder is an AI agent
 ## How it works
 
 ```
-WhatsApp / Telegram / Slack / Email
+WhatsApp / Telegram / Slack / LinkedIn / Email
         │  (channels the agent already sits on)
         ▼
   Clawnify agent ──ingest──▶  OpenChannels (this app)
@@ -35,6 +35,13 @@ WhatsApp / Telegram / Slack / Email
 - Every view is a URL (`/ch/whatsapp`, `/closed`, `/c/<id>`), so back, reload and cmd-click all behave
 - One conversation per contact, closed threads reopen automatically on new inbound
 - Queued / sent / failed delivery states on every outgoing reply
+- LinkedIn messages, reply-only: the agent mirrors the LinkedIn inbox from its
+  own signed-in browser and sends only replies a person wrote here, inside
+  conversations the other person started. No new conversations, no files, no
+  messages written by the agent. LinkedIn offers no messaging API for member
+  accounts, so this runs on your account's session; automating it is against
+  LinkedIn's User Agreement and can get the account restricted, which is why the
+  channel is kept this narrow
 - Start a conversation by searching the people app you already have — point the
   inbox at it once and pick a person instead of typing a phone number. Contacts
   link to that record rather than copying it, so your CRM stays the one place a

@@ -394,8 +394,11 @@ export function ThreadPane({
   const contact = conversation.contact;
   const closed = conversation.status === "closed";
   const channelLabel = channelMeta(conversation.channel).label;
+  const replyOnly = !!channelMeta(conversation.channel).replyOnly;
   /** Notes are always freeform — only an outbound reply is window-gated. */
-  const templateOnly = mode === "reply" && !conversation.window.freeformAllowed;
+  const templateOnly = mode === "reply" && !conversation.window.freeformAllowed && !replyOnly;
+  /** A reply-only thread the contact hasn't written in yet: nothing to answer. */
+  const awaitingContact = mode === "reply" && !conversation.window.freeformAllowed && replyOnly;
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
@@ -418,7 +421,9 @@ export function ThreadPane({
               {contactLabel(contact)}
             </h1>
             <ChannelChip channel={conversation.channel} />
-            {conversation.window.freeformAllowed ? null : (
+            {conversation.window.freeformAllowed ? null : replyOnly ? (
+              <span className="badge badge-warning">Waiting for them to write</span>
+            ) : (
               <span className="badge badge-warning">
                 <FileText className="size-3" aria-hidden />
                 Template only
@@ -527,7 +532,11 @@ export function ThreadPane({
             )}
           </div>
 
-          {templateOnly ? (
+          {awaitingContact ? (
+            <p className="px-3 py-3 text-[0.8125rem] leading-[1.45] text-muted">
+              {`${contactLabel(contact)} hasn't written to you on ${channelLabel} yet. OpenChannels only replies inside ${channelLabel} conversations the other person started.`}
+            </p>
+          ) : templateOnly ? (
             <div className="px-3 py-3">
               <p className="mb-3 flex items-start gap-1.5 text-[0.8125rem] leading-[1.45] text-muted">
                 <FileText className="mt-0.5 size-3.5 shrink-0" aria-hidden />
@@ -587,9 +596,10 @@ export function ThreadPane({
               ) : null}
               <div className="flex items-center justify-between px-3 pb-2.5">
                 <div className="flex items-center gap-1.5">
-                {/* Attach is a reply-mode affordance: notes are internal, and
-                    the template path has no attachment field. */}
-                {mode === "reply" && !templateOnly ? (
+                {/* Attach is a reply-mode affordance: notes are internal, the
+                    template path has no attachment field, and reply-only
+                    channels (LinkedIn) take text only. */}
+                {mode === "reply" && !templateOnly && !replyOnly ? (
                   <>
                     <input
                       ref={fileInputRef}

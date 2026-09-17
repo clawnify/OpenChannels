@@ -449,7 +449,8 @@ export function NewConversationDialog({
           <div className="space-y-1.5">
             <SectionLabel>Channel</SectionLabel>
             <div className="flex flex-wrap gap-1.5">
-              {Object.keys(CHANNELS).map((ch) => {
+              {/* Reply-only channels (LinkedIn) start when the contact writes. */}
+              {Object.keys(CHANNELS).filter((ch) => !CHANNELS[ch].replyOnly).map((ch) => {
                 const active = ch === channel;
                 return (
                   <button
