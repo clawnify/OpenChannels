@@ -287,6 +287,33 @@ export const registerPhone = (id: string, pin: string): Promise<{ ok: boolean }>
 export const refreshTemplates = (channel: string): Promise<{ channel: string; count: number }> =>
   request("/api/templates/refresh", { method: "POST", body: JSON.stringify({ channel }) });
 
+/** How old this tab's copy of a catalogue may be before opening it pulls again. */
+export const TEMPLATE_MAX_AGE_MS = 60_000;
+
+const templatesPulledAt = new Map<string, number>();
+const templatePulls = new Map<string, Promise<boolean>>();
+
+/**
+ * Pull the catalogue unless this tab did so within `maxAgeMs`, so a person
+ * never has to press Sync to see what the provider approved. Callers that land
+ * together share one request. Resolves true when a pull happened, so the
+ * caller knows to re-read the list; a failed pull rejects and is retried by the
+ * next caller rather than remembered as fresh.
+ */
+export function syncTemplates(channel: string, maxAgeMs = TEMPLATE_MAX_AGE_MS): Promise<boolean> {
+  const pending = templatePulls.get(channel);
+  if (pending) return pending;
+  if (Date.now() - (templatesPulledAt.get(channel) ?? 0) < maxAgeMs) return Promise.resolve(false);
+  const pull = refreshTemplates(channel)
+    .then(() => {
+      templatesPulledAt.set(channel, Date.now());
+      return true;
+    })
+    .finally(() => templatePulls.delete(channel));
+  templatePulls.set(channel, pull);
+  return pull;
+}
+
 /**
  * Submit new body text for a template. This writes to the PROVIDER — the
  * template goes back into review and leaves the send picker until approved.

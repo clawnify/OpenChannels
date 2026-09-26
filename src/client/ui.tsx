@@ -114,3 +114,25 @@ export function timeAgo(iso: string): string {
 
 export const timeOfDay = (iso: string) =>
   new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+/** The calendar day a timestamp falls on, in the reader's own timezone. */
+export const localDay = (iso: string) => new Date(iso).toLocaleDateString("en-CA");
+
+/**
+ * The heading over one day of a thread: Today, Yesterday, the weekday within
+ * the last week, then the date — with the year only once it is not this one.
+ */
+export function dayLabel(iso: string): string {
+  const d = new Date(iso);
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOf(new Date()) - startOf(d)) / 86_400_000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days > 1 && days < 7) return d.toLocaleDateString(undefined, { weekday: "long" });
+  return d.toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "numeric",
+    month: "long",
+    ...(d.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" }),
+  });
+}

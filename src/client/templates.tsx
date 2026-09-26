@@ -6,7 +6,7 @@ import {
   deleteTemplate,
   editTemplate,
   listTemplates,
-  refreshTemplates,
+  syncTemplates,
 } from "./api";
 import { SectionLabel } from "./ui";
 
@@ -424,6 +424,9 @@ function NewTemplate({ onCreated, onCancel }: { onCreated: (t: Template) => void
  * beside the conversation filters would have to answer "whose?" on every row,
  * and would go on lying the moment a second channel gained templates of its own.
  */
+/** How often to ask the provider about a template still in review. */
+const REVIEW_POLL_MS = 30_000;
+
 export function TemplatesPanel() {
   const [items, setItems] = useState<Template[] | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -438,21 +441,44 @@ export function TemplatesPanel() {
     setItems(items);
   }, []);
 
+  const resync = useCallback(
+    async (maxAgeMs?: number) => {
+      setRefreshing(true);
+      try {
+        if (await syncTemplates("whatsapp", maxAgeMs)) await load();
+      } catch {
+        /* the list is still whatever we last knew; the next pull tries again */
+      } finally {
+        setRefreshing(false);
+      }
+    },
+    [load],
+  );
+
+  // What is stored first, then the provider's current word behind it — and
+  // again whenever the tab comes back into view, which is when someone who
+  // just approved a template in the provider's console returns to look.
   useEffect(() => {
     load().catch(() => setItems([]));
-  }, [load]);
+    resync();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") resync();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [load, resync]);
 
-  const resync = async () => {
-    setRefreshing(true);
-    try {
-      await refreshTemplates("whatsapp");
-      await load();
-    } catch {
-      /* the button is a convenience; the list is still whatever we last knew */
-    } finally {
-      setRefreshing(false);
-    }
-  };
+  // A template in review flips to Approved on the provider's schedule, not
+  // ours. Watch for it while one is pending, so a submitted edit comes back
+  // into the send picker without anyone pressing Sync.
+  const reviewing = items?.some((t) => t.status === "PENDING") ?? false;
+  useEffect(() => {
+    if (!reviewing) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") resync(0);
+    }, REVIEW_POLL_MS);
+    return () => clearInterval(timer);
+  }, [reviewing, resync]);
 
   return (
     <div>
@@ -469,7 +495,7 @@ export function TemplatesPanel() {
         </button>
         <button
           type="button"
-          onClick={resync}
+          onClick={() => resync(0)}
           disabled={refreshing}
           className="btn btn-secondary"
         >

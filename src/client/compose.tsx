@@ -4,10 +4,10 @@ import type { Conversation, Profile, ProfileSource, Template } from "./api";
 import {
   getProfileSource,
   listTemplates,
-  refreshTemplates,
   searchProfiles,
   sendTemplate,
   startConversation,
+  syncTemplates,
 } from "./api";
 import { CHANNELS, ChannelMark, SectionLabel, channelMeta } from "./ui";
 
@@ -123,6 +123,23 @@ export function TemplateComposer({
     load().catch(() => setTemplates([]));
   }, [load]);
 
+  // Show what is stored at once, then pull from the provider behind it, so a
+  // template approved since the last visit is here without anyone pressing
+  // Refresh. Quiet on failure: the Refresh button still reports the reason.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useEffect(() => {
+    let live = true;
+    setRefreshing(true);
+    syncTemplates(conversation.channel)
+      .then((pulled) => (live && pulled ? loadRef.current() : undefined))
+      .catch(() => {})
+      .finally(() => live && setRefreshing(false));
+    return () => {
+      live = false;
+    };
+  }, [conversation.channel]);
+
   const missing = useMemo(
     () => (selected?.variables ?? []).filter((t) => !values[t]?.trim()),
     [selected, values],
@@ -139,7 +156,7 @@ export function TemplateComposer({
     setRefreshing(true);
     setError(null);
     try {
-      await refreshTemplates(conversation.channel);
+      await syncTemplates(conversation.channel, 0);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not reach the provider.");
