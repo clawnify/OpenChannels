@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   Archive,
   Bot,
@@ -17,7 +17,7 @@ import type { Conversation, Message, Phone } from "./api";
 import { addComment, contactLabel, getMessages, isImageMime, listPhones, messageMediaSrc, patchConversation, sendReply, uploadAttachment } from "./api";
 import { TemplateComposer } from "./compose";
 import { EmojiPicker } from "./emoji";
-import { Avatar, ChannelChip, channelMeta, timeOfDay } from "./ui";
+import { Avatar, ChannelChip, channelMeta, dayLabel, localDay, timeOfDay } from "./ui";
 
 const POLL_MS = 4000;
 
@@ -194,6 +194,20 @@ function MessageRow({ message }: { message: Message }) {
           {outbound ? <OutboundStatus message={message} /> : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Centred over the first message of each day, so a bubble's clock time is
+ * never read without knowing which day it belongs to.
+ */
+function DayDivider({ iso }: { iso: string }) {
+  return (
+    <div className="flex justify-center px-4 pt-2 md:px-6">
+      <time dateTime={localDay(iso)} className="chip rounded-full">
+        {dayLabel(iso)}
+      </time>
     </div>
   );
 }
@@ -474,7 +488,14 @@ export function ThreadPane({
             No messages here yet. They'll appear as soon as your agent mirrors this thread.
           </p>
         ) : (
-          messages.map((m) => <MessageRow key={m.id} message={m} />)
+          messages.map((m, i) => (
+            <Fragment key={m.id}>
+              {i === 0 || localDay(m.createdAt) !== localDay(messages[i - 1].createdAt) ? (
+                <DayDivider iso={m.createdAt} />
+              ) : null}
+              <MessageRow message={m} />
+            </Fragment>
+          ))
         )}
       </div>
 

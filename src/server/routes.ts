@@ -607,9 +607,13 @@ function metaPage(result: unknown): { items: ProviderTemplate[]; nextCursor?: st
 }
 
 /**
- * Replace a channel's catalogue in one shot. A replace (not a merge) is what
- * keeps a paused or deleted template from lingering in the composer after the
- * provider has withdrawn it.
+ * Replace a channel's catalogue with what the provider holds now.
+ *
+ * Upsert on (org, channel, name, language), then drop what the provider no
+ * longer lists — so a paused or deleted template still leaves the composer,
+ * but a row keeps its id across syncs. The client refreshes the catalogue in
+ * the background, and a delete-and-reinsert would hand every template a new id
+ * under an editor that is open on the old one.
  */
 async function replaceCatalogue(
   db: DB,
@@ -618,12 +622,6 @@ async function replaceCatalogue(
   templates: ProviderTemplate[],
 ): Promise<number> {
   const now = new Date().toISOString();
-  await db
-    .delete(schema.templates)
-    .where(and(eq(schema.templates.orgId, org), eq(schema.templates.channel, channel)));
-
-  if (templates.length === 0) return 0;
-
   const rows = templates.map((t) => {
     const bodyText = bodyTextOf(t.components);
     return {
@@ -647,8 +645,40 @@ async function replaceCatalogue(
   // statement — one INSERT of a whole catalogue blows that limit.
   const ROWS_PER_INSERT = 5;
   for (let i = 0; i < rows.length; i += ROWS_PER_INSERT) {
-    await db.insert(schema.templates).values(rows.slice(i, i + ROWS_PER_INSERT));
+    await db
+      .insert(schema.templates)
+      .values(rows.slice(i, i + ROWS_PER_INSERT))
+      .onConflictDoUpdate({
+        target: [
+          schema.templates.orgId,
+          schema.templates.channel,
+          schema.templates.name,
+          schema.templates.language,
+        ],
+        set: {
+          category: sql`excluded.category`,
+          status: sql`excluded.status`,
+          bodyText: sql`excluded.body_text`,
+          variables: sql`excluded.variables`,
+          components: sql`excluded.components`,
+          externalId: sql`excluded.external_id`,
+          syncedAt: sql`excluded.synced_at`,
+        },
+      });
   }
+
+  // Everything this sync did not touch is gone at the provider.
+  // shortcut: two syncs overlapping can each drop rows the other just wrote;
+  // the next sync restores them. A per-org lock if that ever shows up.
+  await db
+    .delete(schema.templates)
+    .where(
+      and(
+        eq(schema.templates.orgId, org),
+        eq(schema.templates.channel, channel),
+        lt(schema.templates.syncedAt, now),
+      ),
+    );
   return rows.length;
 }
 
