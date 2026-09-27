@@ -36,9 +36,10 @@ Whenever a message arrives on (or is sent from) a channel you manage, and once
 per conversation when backfilling history:
 
 1. `POST /api/ingest` with:
-   - `channel`: `whatsapp` | `telegram` | `slack` | `email` | `sms` | `other`
+   - `channel`: `whatsapp` | `telegram` | `slack` | `email` | `sms` | `linkedin` | `other`
    - `contact`: `{ handle, name? }` — the channel-native address (phone, email,
-     @username) and display name if known
+     @username; for LinkedIn the public profile URL, `linkedin.com/in/<slug>`)
+     and display name if known
    - `message`: `{ kind: "inbound" | "outbound", body, externalId?, at? }` —
      `externalId` is the channel's own message id (repeats are dropped, so
      re-ingesting is always safe); `at` is the original ISO timestamp for
@@ -56,7 +57,8 @@ On a heartbeat, or when asked to "check the inbox":
 
 1. `GET /api/outbox` — each item has `message.body`, `channel`,
    `contact.handle`, `subject` (email only), and `template` (or `null`).
-2. Send it to that contact **through the channel's own tool**:
+2. Send it to that contact **through the channel's own tool** (LinkedIn: see
+   below — `opening` items go to 1st-degree connections only):
    - `template` is `null` → send `message.body` as a normal text message.
    - `template` is set → send it as a **template**, passing `template.name`,
      `template.language` and `template.variables` straight through (e.g.
@@ -65,6 +67,49 @@ On a heartbeat, or when asked to "check the inbox":
    `{ "status": "sent" }`, or `{ "status": "failed", "error": "<why>" }` if the
    send didn't happen. Unconfirmed items stay queued and will be handed to you
    again.
+
+## LinkedIn: connections only, from your own browser
+
+LinkedIn has no messaging API for a member account. You read and send LinkedIn
+messages in **your own browser, already signed in to the org's LinkedIn
+account** — the same session you use for anything else on LinkedIn. The rules
+are stricter than on other channels, because an account that looks automated is
+what LinkedIn restricts, and the account is a person's.
+
+- **Stay inside your browser session.** Work through the pages, or through the
+  requests LinkedIn's own messaging page makes, from inside that page. Never
+  copy the session cookie out, never store or send it anywhere, never sign in
+  with a password, and never install a library that does any of that. If you
+  are signed out, stop and report it.
+- **Mirror (Procedure 1), at a person's pace.** On each heartbeat, open the
+  messaging inbox and ingest only messages newer than the last one you
+  mirrored. `contact.handle` is the member's public profile URL
+  (`https://www.linkedin.com/in/<slug>`); never a `/sales/…` link. Use
+  LinkedIn's own id for the message as `externalId`, so a re-read is harmless.
+  Mirror your account's own messages in those threads as `kind: "outbound"`.
+- **Send only what the outbox gives you (Procedure 2).** LinkedIn items are
+  always plain text written by a person in the app. You never write a LinkedIn
+  message yourself, never send a connection request or InMail, and never
+  message anyone the outbox did not name.
+- **An `opening: true` item goes to connections only.** It is the first message
+  in that thread. Before sending, open the person's profile and confirm they
+  are a **1st-degree connection**. If they are not — or you cannot tell — send
+  nothing and mark it
+  `{ "status": "failed", "error": "Not a LinkedIn connection" }`. Never send a
+  connection request to make it possible. The app allows one opening message
+  per thread and nothing more until the person replies.
+- **Stop at any wall.** A sign-in page, a CAPTCHA or security check, a
+  "you're sending too many messages" notice, or any restriction banner: send
+  nothing more this heartbeat, mark each item you could not send
+  `{ "status": "failed", "error": "<what LinkedIn showed>" }`, and tell the
+  user. Never retry through it or work around it.
+- **Pace.** A few messages per heartbeat at most, with pauses between them.
+  Anything left stays queued for the next one.
+- **Daily limits are the app's job.** The outbox holds back LinkedIn items once
+  the account has sent its daily share (50 messages and 20 opening messages
+  over a rolling 24 hours, unless the org changed them). An empty outbox means
+  wait, not a fault; never send LinkedIn messages from anywhere else to catch
+  up. Always confirm `sent` promptly: the limits count confirmed sends.
 
 ## The 24-hour window (why some threads are template-only)
 

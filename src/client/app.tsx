@@ -42,6 +42,7 @@ const CHANNEL_NAV: Record<string, { icon: string; color?: NavColor }> = {
   slack: { icon: "hash", color: "violet" },
   email: { icon: "mail", color: "orange" },
   sms: { icon: "phone", color: "sky" },
+  linkedin: { icon: "briefcase", color: "blue" },
   other: { icon: "message-square" },
 };
 

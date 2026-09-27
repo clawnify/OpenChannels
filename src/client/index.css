@@ -162,6 +162,7 @@
   --ch-slack: #7c3aed;
   --ch-email: #ea580c;
   --ch-sms: #0d9488;
+  --ch-linkedin: #0a66c2;
   --ch-other: #64748b;
 }
 @media (prefers-color-scheme: dark) {
@@ -171,6 +172,7 @@
     --ch-slack: #a78bfa;
     --ch-email: #fb923c;
     --ch-sms: #2dd4bf;
+    --ch-linkedin: #38bdf8;
     --ch-other: #94a3b8;
   }
 }
@@ -179,6 +181,7 @@
 .ch-slack { --ch: var(--ch-slack); }
 .ch-email { --ch: var(--ch-email); }
 .ch-sms { --ch: var(--ch-sms); }
+.ch-linkedin { --ch: var(--ch-linkedin); }
 .ch-other { --ch: var(--ch-other); }
 
 .channel-dot {
