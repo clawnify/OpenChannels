@@ -142,6 +142,17 @@ const ConversationSchema = z
      * failure from three weeks ago buries today's live conversations.
      */
     undelivered: z.boolean(),
+    /**
+     * When and why, whenever `undelivered` is true; null otherwise. The error
+     * is the provider's own words, which is what separates a number that is
+     * not on the channel from a send the provider throttled. Lets a caller
+     * answer "which numbers are dead?" from this list instead of reading every
+     * thread. Always null outside the list endpoint.
+     */
+    lastFailure: z
+      .object({ at: z.string(), error: z.string().nullable() })
+      .nullable()
+      .openapi("LastFailure"),
     /** The dashboard user who owns the thread; null means unassigned. */
     assignee: z
       .object({ id: z.string(), name: z.string().nullable() })
@@ -707,7 +718,7 @@ const toConversation = (
   conv: typeof schema.conversations.$inferSelect,
   contact: typeof schema.contacts.$inferSelect,
   window: SendWindow,
-  undelivered = false,
+  lastFailure: { at: string; error: string | null } | null = null,
 ) => ({
   id: conv.id,
   channel: conv.channel,
@@ -717,7 +728,8 @@ const toConversation = (
   lastMessageAt: conv.lastMessageAt,
   lastMessagePreview: conv.lastMessagePreview,
   contact: toContact(contact),
-  undelivered,
+  undelivered: lastFailure !== null,
+  lastFailure,
   assignee:
     conv.assigneeId && conv.assigneeId !== "assignee_id"
       ? { id: conv.assigneeId, name: conv.assigneeName }
@@ -1063,9 +1075,11 @@ api.openapi(
     // because a system audit line or an internal note written after a failed
     // send would otherwise hide the failure. The flag renders as a chip and the
     // failure transition marks the thread unread; the list itself stays in
-    // recency order.
-    const lastUndelivered = sql<number>`(
-      SELECT CASE WHEN m.kind = 'outbound' AND m.status IN ('failed','undelivered') THEN 1 ELSE 0 END
+    // recency order. Carries the failure's time and error as JSON so the flag
+    // and its reason come from the same row.
+    const lastUndelivered = sql<string | null>`(
+      SELECT CASE WHEN m.kind = 'outbound' AND m.status IN ('failed','undelivered')
+        THEN json_object('at', m.created_at, 'error', m.error) END
       FROM messages m
       WHERE m.conversation_id = ${schema.conversations.id}
         AND m.kind IN ('inbound','outbound')
@@ -1096,7 +1110,12 @@ api.openapi(
     return c.json(
       {
         items: rows.map((r) =>
-          toConversation(r.conv, r.contact, windows.get(r.conv.id) ?? OPEN_WINDOW, r.undelivered === 1),
+          toConversation(
+            r.conv,
+            r.contact,
+            windows.get(r.conv.id) ?? OPEN_WINDOW,
+            r.undelivered ? (JSON.parse(r.undelivered) as { at: string; error: string | null }) : null,
+          ),
         ),
         total,
       },
@@ -2963,6 +2982,8 @@ const SentTemplateSchema = z
     at: z.string(),
     /** Who sent it — a person's name, or "Agent" for an automation. */
     authorName: z.string().nullable(),
+    /** The text as sent, blanks filled: what the recipient actually read. */
+    body: z.string(),
   })
   .openapi("SentTemplate");
 
@@ -2972,13 +2993,14 @@ api.openapi(
     path: "/api/sent-templates",
     summary: "Which approved templates have already gone out, and to whom",
     description:
-      "One flat list of every template that actually left this app, keyed by the contact's handle. This inbox is a shared space — a person sending from the UI and an automation sending on a schedule both land here — so this is the only place that can answer 'has this already been sent?' for BOTH. Anything deciding whether to send should check here first, exactly as a human reads the thread before typing.\n\nFailed sends are excluded: those did not reach anyone, so they are still owed. Ordered newest first.",
+      "One flat list of every template that actually left this app, keyed by the contact's handle. This inbox is a shared space — a person sending from the UI and an automation sending on a schedule both land here — so this is the only place that can answer 'has this already been sent?' for BOTH. Anything deciding whether to send should check here first, exactly as a human reads the thread before typing.\n\nFailed sends are excluded: those did not reach anyone, so they are still owed. Ordered newest first. Page with `offset`: a page shorter than `limit` is the last one, and a caller that stops at a full page is reading a truncated history.",
     request: {
       query: z.object({
         channel: z.enum(CHANNELS).optional(),
         /** ISO timestamp — only messages at or after this. */
         since: z.string().optional(),
         limit: z.coerce.number().int().min(1).max(1000).default(500),
+        offset: z.coerce.number().int().min(0).default(0),
       }),
     },
     responses: {
@@ -3013,13 +3035,16 @@ api.openapi(
         status: schema.messages.status,
         at: schema.messages.createdAt,
         authorName: schema.messages.authorName,
+        body: schema.messages.body,
       })
       .from(schema.messages)
       .innerJoin(schema.conversations, eq(schema.messages.conversationId, schema.conversations.id))
       .innerJoin(schema.contacts, eq(schema.conversations.contactId, schema.contacts.id))
       .where(and(...filters))
-      .orderBy(desc(schema.messages.createdAt))
-      .limit(q.limit);
+      // id breaks ties so paging by offset never skips a row sent in the same millisecond.
+      .orderBy(desc(schema.messages.createdAt), desc(schema.messages.id))
+      .limit(q.limit)
+      .offset(q.offset);
 
     return c.json({ items: rows.map((r) => ({ ...r, templateName: r.templateName! })) }, 200);
   },
