@@ -170,11 +170,17 @@ export function listConversations(params: {
 
 export const getStats = (): Promise<Stats> => request("/api/stats");
 
+/** The newest `limit` messages, or the ones just before `before` (an ISO timestamp). */
 export const getMessages = (
   conversationId: string,
   limit = 100,
+  before?: string,
 ): Promise<{ items: Message[]; hasMore: boolean }> =>
-  request(`/api/conversations/${conversationId}/messages?limit=${limit}`);
+  request(
+    `/api/conversations/${conversationId}/messages?limit=${limit}${
+      before ? `&before=${encodeURIComponent(before)}` : ""
+    }`,
+  );
 
 /** Freeform text — rejected with 409 when the send window is shut. */
 export const sendReply = (

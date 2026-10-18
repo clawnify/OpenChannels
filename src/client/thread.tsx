@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Archive,
   Bot,
@@ -20,6 +20,17 @@ import { EmojiPicker } from "./emoji";
 import { Avatar, ChannelChip, channelMeta, dayLabel, localDay, timeOfDay } from "./ui";
 
 const POLL_MS = 4000;
+
+/**
+ * Union by id, oldest first, the newer copy winning. The poll only re-reads
+ * the latest page, so replacing the list with it would drop every older page
+ * the reader paged in, and leave a gap once new messages push that page on.
+ */
+function mergeMessages(prev: Message[] | null, next: Message[]): Message[] {
+  const byId = new Map((prev ?? []).map((m) => [m.id, m]));
+  for (const m of next) byId.set(m.id, m);
+  return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
 
 /**
  * The attachment whose bytes we actually hold, rendered as content rather than
@@ -262,6 +273,9 @@ export function ThreadPane({
   onBack?: () => void;
 }) {
   const [messages, setMessages] = useState<Message[] | null>(null);
+  /** Whether the server holds messages before the oldest one shown. Null until the first page lands. */
+  const [hasOlder, setHasOlder] = useState<boolean | null>(null);
+  const [olderState, setOlderState] = useState<"idle" | "loading" | "failed">("idle");
   const [mode, setMode] = useState<"reply" | "note">("reply");
   const [draft, setDraft] = useState("");
   /** A file picked in the composer, sent with the reply. Reply-mode only. */
@@ -296,14 +310,42 @@ export function ThreadPane({
   const [fromId, setFromId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  /** Distance from the bottom to restore after older messages are prepended. */
+  const keepFromBottom = useRef<number | null>(null);
+  /** The thread on screen, so a response for the previous one is dropped, not merged in. */
+  const threadId = useRef(conversation.id);
 
   const load = useCallback(async () => {
-    const { items } = await getMessages(conversation.id);
-    setMessages(items);
+    const id = conversation.id;
+    const { items, hasMore } = await getMessages(id);
+    if (threadId.current !== id) return;
+    setMessages((prev) => mergeMessages(prev, items));
+    setHasOlder((known) => known ?? hasMore);
   }, [conversation.id]);
 
+  async function loadOlder() {
+    const oldest = messages?.[0];
+    if (!oldest || olderState === "loading") return;
+    const id = conversation.id;
+    setOlderState("loading");
+    try {
+      const { items, hasMore } = await getMessages(id, 100, oldest.createdAt);
+      if (threadId.current !== id) return;
+      const el = scrollRef.current;
+      if (el) keepFromBottom.current = el.scrollHeight - el.scrollTop;
+      setMessages((prev) => mergeMessages(prev, items));
+      setHasOlder(hasMore);
+      setOlderState("idle");
+    } catch {
+      setOlderState("failed");
+    }
+  }
+
   useEffect(() => {
+    threadId.current = conversation.id;
     setMessages(null);
+    setHasOlder(null);
+    setOlderState("idle");
     stickToBottom.current = true;
     load().catch(() => {});
     const t = setInterval(() => load().catch(() => {}), POLL_MS);
@@ -334,10 +376,16 @@ export function ThreadPane({
     };
   }, [conversation.channel, conversation.id]);
 
-  // Keep the newest message in view unless the reader scrolled up.
-  useEffect(() => {
+  // Keep the newest message in view unless the reader scrolled up, and keep
+  // the reader's place when older messages are prepended above them. A layout
+  // effect, so the prepend never paints at the wrong scroll position.
+  useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (keepFromBottom.current !== null) {
+      el.scrollTop = el.scrollHeight - keepFromBottom.current;
+      keepFromBottom.current = null;
+    } else if (stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   const onScroll = () => {
@@ -488,14 +536,32 @@ export function ThreadPane({
             No messages here yet. They'll appear as soon as your agent mirrors this thread.
           </p>
         ) : (
-          messages.map((m, i) => (
-            <Fragment key={m.id}>
-              {i === 0 || localDay(m.createdAt) !== localDay(messages[i - 1].createdAt) ? (
-                <DayDivider iso={m.createdAt} />
-              ) : null}
-              <MessageRow message={m} />
-            </Fragment>
-          ))
+          <>
+            {hasOlder ? (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  onClick={loadOlder}
+                  disabled={olderState === "loading"}
+                  className="btn btn-ghost text-sm"
+                >
+                  {olderState === "loading"
+                    ? "Loading…"
+                    : olderState === "failed"
+                      ? "Couldn't load older messages. Try again"
+                      : "Show older messages"}
+                </button>
+              </div>
+            ) : null}
+            {messages.map((m, i) => (
+              <Fragment key={m.id}>
+                {i === 0 || localDay(m.createdAt) !== localDay(messages[i - 1].createdAt) ? (
+                  <DayDivider iso={m.createdAt} />
+                ) : null}
+                <MessageRow message={m} />
+              </Fragment>
+            ))}
+          </>
         )}
       </div>
 
