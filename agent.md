@@ -147,11 +147,17 @@ through to it, and a screenshot always has a link that reproduces it.
 - `/c/<conversationId>` — one thread, open.
 - Append `?agent` when browsing it yourself for larger targets.
 
+Three more views list who has written in: `/needs-reply` (their latest message
+has no answer yet, even if someone has read it), `/unread` (nobody has opened
+it since) and `/replied` (they have written at least once).
+
 ## API anchors
 
 Discovery: `GET /llms.txt` / `GET /api/openapi.json`. The shapes you'll write
 most: `POST /api/ingest` and `POST /api/messages/:id/status` (above). Also
-there when needed: `GET /api/conversations` (paginated, `?search=`),
+there when needed: `GET /api/conversations` (paginated, `?search=`, and
+`?only=needs_reply` for who is still waiting on an answer; your freeform reply
+takes a thread out of it, an automated template does not),
 `GET /api/conversations/:id/messages`, `POST /api/conversations/:id/comment`
 (internal note), `PATCH /api/conversations/:id` (`{"status":"closed"}`).
 

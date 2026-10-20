@@ -51,6 +51,10 @@ export interface Conversation {
   subject: string | null;
   status: string;
   unread: number;
+  /** The contact's latest message has no reply after it; reading doesn't clear it. */
+  needsReply: boolean;
+  /** When the contact last wrote; null when they never have. */
+  lastInboundAt: string | null;
   /** The last real message is an outbound the channel did not deliver. */
   undelivered: boolean;
   lastMessageAt: string;
@@ -106,6 +110,7 @@ export interface Template {
 export interface Stats {
   totalOpen: number;
   totalUnread: number;
+  needsReply: number;
   queued: number;
   mine: number;
   unassigned: number;
@@ -158,6 +163,7 @@ export function listConversations(params: {
   status?: string;
   search?: string;
   assignee?: "me" | "unassigned";
+  only?: "needs_reply" | "replied" | "unread";
   limit?: number;
   offset?: number;
 }): Promise<{ items: Conversation[]; total: number }> {

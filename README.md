@@ -32,6 +32,7 @@ WhatsApp / Telegram / Slack / Email
 ## Features
 
 - Three-pane inbox: channel navigation (live counts) → conversation list (search, unread) → thread
+- Needs reply, Unread and Replied views. A thread someone wrote in stays in Needs reply until it is answered, even once read, and an automated batch template does not count as the answer
 - Every view is a URL (`/ch/whatsapp`, `/closed`, `/c/<id>`), so back, reload and cmd-click all behave
 - One conversation per contact, closed threads reopen automatically on new inbound
 - Queued / sent / failed delivery states on every outgoing reply

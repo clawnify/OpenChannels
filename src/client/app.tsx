@@ -19,9 +19,12 @@ import { Avatar, SectionLabel, CHANNELS, channelClass, channelMeta, timeAgo } fr
 const POLL_MS = 5000;
 const PAGE_SIZE = 50;
 
-/** Sidebar filter: the whole inbox, one channel, or the closed archive. */
+/** Sidebar filter: the whole inbox, a slice of it, one channel, or the closed archive. */
 type Filter =
   | { kind: "all" }
+  | { kind: "needs_reply" }
+  | { kind: "unread" }
+  | { kind: "replied" }
   | { kind: "mine" }
   | { kind: "unassigned" }
   | { kind: "channel"; channel: string }
@@ -47,6 +50,16 @@ const CHANNEL_NAV: Record<string, { icon: string; color?: NavColor }> = {
 
 const channelNav = (channel: string) => CHANNEL_NAV[channel] ?? CHANNEL_NAV.other;
 
+const LIST_TITLES: Record<Exclude<Filter["kind"], "channel" | "setup">, string> = {
+  all: "All open",
+  needs_reply: "Needs reply",
+  unread: "Unread",
+  replied: "Replied",
+  mine: "Mine",
+  unassigned: "Unassigned",
+  closed: "Closed",
+};
+
 /** The `id` <AppNav> hands back on click, and the value `active` is matched on. */
 const navId = (filter: Filter) =>
   filter.kind === "channel" ? `ch:${filter.channel}` : filter.kind;
@@ -56,6 +69,12 @@ function filterPath(filter: Filter): string {
   switch (filter.kind) {
     case "channel":
       return `/ch/${encodeURIComponent(filter.channel)}`;
+    case "needs_reply":
+      return "/needs-reply";
+    case "unread":
+      return "/unread";
+    case "replied":
+      return "/replied";
     case "mine":
       return "/mine";
     case "unassigned":
@@ -71,6 +90,9 @@ function filterPath(filter: Filter): string {
 
 function filterFromId(id: string): Filter {
   if (id.startsWith("ch:")) return { kind: "channel", channel: id.slice(3) };
+  if (id === "needs_reply") return { kind: "needs_reply" };
+  if (id === "unread") return { kind: "unread" };
+  if (id === "replied") return { kind: "replied" };
   if (id === "mine") return { kind: "mine" };
   if (id === "unassigned") return { kind: "unassigned" };
   if (id === "closed") return { kind: "closed" };
@@ -82,10 +104,13 @@ function ConversationRow({
   conversation,
   active,
   onClick,
+  byInbound = false,
 }: {
   conversation: Conversation;
   active: boolean;
   onClick: () => void;
+  /** Time the row by the contact's latest message, the order those views sort in. */
+  byInbound?: boolean;
 }) {
   const name = contactLabel(conversation.contact);
   return (
@@ -126,7 +151,9 @@ function ConversationRow({
             </span>
           ) : null}
           <span className="data shrink-0 text-xs text-faint">
-            {timeAgo(conversation.lastMessageAt)}
+            {timeAgo(
+              (byInbound && conversation.lastInboundAt) || conversation.lastMessageAt,
+            )}
           </span>
         </div>
         <div className="mt-0.5 flex items-center gap-2">
@@ -159,6 +186,9 @@ function conversationIdFromPath(): string | null {
  */
 function filterFromPath(): Filter {
   const path = window.location.pathname;
+  if (path === "/needs-reply") return { kind: "needs_reply" };
+  if (path === "/unread") return { kind: "unread" };
+  if (path === "/replied") return { kind: "replied" };
   if (path === "/mine") return { kind: "mine" };
   if (path === "/unassigned") return { kind: "unassigned" };
   const channel = path.match(/^\/ch\/([^/?#]+)/);
@@ -285,6 +315,10 @@ export function App() {
           : filter.kind === "unassigned"
             ? ("unassigned" as const)
             : undefined,
+      only:
+        filter.kind === "needs_reply" || filter.kind === "unread" || filter.kind === "replied"
+          ? filter.kind
+          : undefined,
       search: debouncedSearch || undefined,
       limit: PAGE_SIZE,
     };
@@ -410,6 +444,9 @@ export function App() {
     {
       label: "Views",
       items: [
+        { id: "needs_reply", label: "Needs reply", href: "/needs-reply", icon: "clock", count: stats?.needsReply },
+        { id: "unread", label: "Unread", href: "/unread", icon: "bell", count: stats?.totalUnread },
+        { id: "replied", label: "Replied", href: "/replied", icon: "activity" },
         { id: "mine", label: "Mine", href: "/mine", icon: "user", count: stats?.mine },
         { id: "unassigned", label: "Unassigned", href: "/unassigned", icon: "users", count: stats?.unassigned },
         { id: "closed", label: "Closed", href: "/closed", icon: "archive" },
@@ -442,15 +479,7 @@ export function App() {
   }
 
   const listTitle =
-    filter.kind === "all"
-      ? "All open"
-      : filter.kind === "mine"
-        ? "Mine"
-        : filter.kind === "unassigned"
-          ? "Unassigned"
-          : filter.kind === "closed"
-            ? "Closed"
-            : channelMeta(filter.channel).label;
+    filter.kind === "channel" ? channelMeta(filter.channel).label : LIST_TITLES[filter.kind];
 
   return (
     <div className={shell}>
@@ -512,6 +541,7 @@ export function App() {
                 conversation={c}
                 active={c.id === selectedId}
                 onClick={() => select(c)}
+                byInbound={filter.kind === "needs_reply" || filter.kind === "replied"}
               />
             ))
           )}
@@ -645,6 +675,19 @@ function EmptyList({
         <p className="text-sm leading-relaxed text-muted">
           Nothing has been closed yet. Closing a thread files it here without deleting anything.
         </p>
+      </div>
+    );
+  }
+  const waiting: Partial<Record<Filter["kind"], string>> = {
+    needs_reply:
+      "Nobody is waiting on a reply. A thread lands here when someone writes in, and stays until it is answered, even once it has been read.",
+    unread: "Nothing unread. A thread lands here when someone writes in, until someone opens it.",
+    replied: "Nobody has written in yet. A thread lands here once the contact sends their first message.",
+  };
+  if (waiting[filter.kind]) {
+    return (
+      <div className="px-6 pt-12 text-center">
+        <p className="text-sm leading-relaxed text-muted">{waiting[filter.kind]}</p>
       </div>
     );
   }

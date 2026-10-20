@@ -1,6 +1,6 @@
 import { OpenAPIHono, createRoute, z, user, orgId, caller } from "@clawnify/app";
 import { connect } from "@clawnify/connections";
-import { getDB, and, or, eq, desc, asc, lt, like, count, sql, inArray, isNull } from "@clawnify/db";
+import { getDB, and, or, eq, desc, asc, lt, like, count, sql, inArray, isNull, isNotNull } from "@clawnify/db";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "./schema";
 
@@ -131,6 +131,14 @@ const ConversationSchema = z
     subject: z.string().nullable(),
     status: z.string(),
     unread: z.number(),
+    /**
+     * The contact's latest message has no reply after it. Reading the thread
+     * doesn't clear it, and neither does an automated template; a person's
+     * reply or any freeform message does.
+     */
+    needsReply: z.boolean(),
+    /** When the contact last wrote; null when they never have. */
+    lastInboundAt: z.string().nullable(),
     lastMessageAt: z.string(),
     lastMessagePreview: z.string(),
     contact: ContactSchema,
@@ -725,6 +733,8 @@ const toConversation = (
   subject: conv.subject,
   status: conv.status,
   unread: conv.unread,
+  needsReply: conv.needsReply === 1,
+  lastInboundAt: conv.lastInboundAt,
   lastMessageAt: conv.lastMessageAt,
   lastMessagePreview: conv.lastMessagePreview,
   contact: toContact(contact),
@@ -794,6 +804,72 @@ async function findConversation(
     .limit(1);
   return row ?? null;
 }
+
+/* -------------------------------- reply state ------------------------------ */
+
+/**
+ * The contact's latest message, and our latest reply to it, read from the
+ * thread itself. Raw SQL because it runs inside an UPDATE of `conversations`
+ * and must correlate to the row being written.
+ *
+ * A reply is an outbound message that did not fail and is not an automated
+ * template. Templates the agent or another app sends go out in batches, and a
+ * reminder sent to a hundred people answers none of their questions. So a
+ * template counts only when a signed-in person sent it from the thread, which
+ * is how anyone answers once the 24-hour window has shut. Freeform always
+ * counts: somebody wrote back.
+ */
+const lastInboundSql = sql`(SELECT max(m.created_at) FROM messages m
+  WHERE m.conversation_id = conversations.id AND m.kind = 'inbound')`;
+const lastReplySql = sql`(SELECT max(m.created_at) FROM messages m
+  WHERE m.conversation_id = conversations.id AND m.kind = 'outbound'
+    AND coalesce(m.status, '') NOT IN ('failed', 'undelivered')
+    AND (m.template_name IS NULL OR m.user_id IS NOT NULL))`;
+
+/**
+ * The `lastInboundAt` / `needsReply` pair, derived from the thread. Every write
+ * that can change either one re-runs this rather than patching the columns,
+ * so out-of-order history, a late failure and a discarded draft all land on
+ * the same answer.
+ */
+const replyState = {
+  lastInboundAt: lastInboundSql,
+  needsReply: sql`coalesce(${lastInboundSql}, '') > coalesce(${lastReplySql}, '')`,
+};
+
+const refreshReplyState = (db: DB, conversationId: string) =>
+  db.update(schema.conversations).set(replyState).where(eq(schema.conversations.id, conversationId));
+
+/**
+ * Threads older than these columns hold their defaults (never wrote, nothing
+ * owed), so each org's history is read into them once, on its first request.
+ * The settings marker makes that once per database; the set skips even the
+ * marker read for the rest of the isolate's life.
+ */
+const REPLY_STATE_KEY = "reply_state_v1";
+const replyStateReady = new Set<string>();
+
+api.use("/api/*", async (c, next) => {
+  const org = orgId(c);
+  if (org && !replyStateReady.has(org)) {
+    try {
+      const db = dbFor(c.env);
+      if (!(await readSetting(db, org, REPLY_STATE_KEY))) {
+        await db.update(schema.conversations).set(replyState).where(eq(schema.conversations.orgId, org));
+        const now = new Date().toISOString();
+        await db
+          .insert(schema.settings)
+          .values({ orgId: org, key: REPLY_STATE_KEY, value: now, updatedAt: now })
+          .onConflictDoNothing();
+      }
+      replyStateReady.add(org);
+    } catch {
+      // Retried on the next request. Until then the two views are short of
+      // old threads; the inbox itself must not fail over a filter.
+    }
+  }
+  await next();
+});
 
 /* ---------------------------------- ingest --------------------------------- */
 
@@ -1010,6 +1086,7 @@ api.openapi(
         ...(inbound ? { unread: 1, status: "open" } : {}),
       })
       .where(eq(schema.conversations.id, conv.id));
+    await refreshReplyState(db, conv.id);
 
     return c.json({ conversationId: conv.id, messageId: msg.id, duplicate: false }, 200);
   },
@@ -1023,7 +1100,7 @@ api.openapi(
     path: "/api/conversations",
     summary: "List conversations",
     description:
-      "Paginated inbox, most recent first. Filter by channel and status (default open); search matches contact name/handle and the last message preview.",
+      "Paginated inbox, most recent first. Filter by channel and status (default open); search matches contact name/handle and the last message preview.\n\n`only` narrows to who has written in: `needs_reply` (their latest message has no reply yet; reading it doesn't count, and neither does an automated template), `replied` (they have written at least once) or `unread` (nobody has opened it since). `needs_reply` and `replied` are ordered by the contact's latest message, newest first.",
     request: {
       query: z.object({
         channel: z.enum(CHANNELS).optional(),
@@ -1031,6 +1108,7 @@ api.openapi(
         search: z.string().optional(),
         /** "me" → assigned to the caller; "unassigned" → nobody owns it. */
         assignee: z.enum(["me", "unassigned"]).optional(),
+        only: z.enum(["needs_reply", "replied", "unread"]).optional(),
         limit: z.coerce.number().int().min(1).max(100).default(25),
         offset: z.coerce.number().int().min(0).default(0),
       }),
@@ -1059,6 +1137,9 @@ api.openapi(
     } else if (q.assignee === "unassigned") {
       filters.push(isNull(schema.conversations.assigneeId));
     }
+    if (q.only === "needs_reply") filters.push(eq(schema.conversations.needsReply, 1));
+    else if (q.only === "replied") filters.push(isNotNull(schema.conversations.lastInboundAt));
+    else if (q.only === "unread") filters.push(eq(schema.conversations.unread, 1));
     if (q.search) {
       const term = `%${q.search}%`;
       filters.push(
@@ -1093,7 +1174,15 @@ api.openapi(
         .from(schema.conversations)
         .innerJoin(schema.contacts, eq(schema.conversations.contactId, schema.contacts.id))
         .where(where)
-        .orderBy(desc(schema.conversations.lastMessageAt))
+        // Who wrote in is ordered by when they wrote, not by our last send: a
+        // batch would otherwise lift every thread it touched above them.
+        .orderBy(
+          desc(
+            q.only === "needs_reply" || q.only === "replied"
+              ? schema.conversations.lastInboundAt
+              : schema.conversations.lastMessageAt,
+          ),
+        )
         .limit(q.limit)
         .offset(q.offset),
       db
@@ -1537,13 +1626,15 @@ api.openapi(
     method: "get",
     path: "/api/stats",
     summary: "Inbox counts for the sidebar",
-    description: "Open/unread totals, per-channel open counts, the queued-outbound count, and mine/unassigned ownership counts.",
+    description: "Open/unread/needs-reply totals, per-channel open counts, the queued-outbound count, and mine/unassigned ownership counts.",
     responses: {
       200: jsonRes(
         z
           .object({
             totalOpen: z.number(),
             totalUnread: z.number(),
+            /** Open threads whose contact is waiting on a reply. */
+            needsReply: z.number(),
             queued: z.number(),
             /** Open threads assigned to the caller; -1 when identity is absent. */
             mine: z.number(),
@@ -1573,6 +1664,7 @@ api.openapi(
         .select({
           totalOpen: count(),
           totalUnread: sql<number>`coalesce(sum(${schema.conversations.unread}), 0)`,
+          needsReply: sql<number>`coalesce(sum(${schema.conversations.needsReply}), 0)`,
         })
         .from(schema.conversations)
         .where(open),
@@ -1594,6 +1686,7 @@ api.openapi(
       {
         totalOpen: totals.totalOpen,
         totalUnread: Number(totals.totalUnread),
+        needsReply: Number(totals.needsReply),
         queued: queued.queued,
         mine: me ? mineRow.mine : 0,
         unassigned: unassignedRow.unassigned,
@@ -1920,9 +2013,13 @@ api.openapi(
       .set({
         lastMessageAt: now,
         lastMessagePreview: preview(body || (attachment ? `[${attachment.type}]` : "")),
-        unread: 0,
+        // Unread means no person has looked since the contact wrote. A send
+        // from the agent or another app (a batch reminder, say) is not
+        // someone reading the thread, so only a signed-in sender clears it.
+        ...(u ? { unread: 0 } : {}),
       })
       .where(eq(schema.conversations.id, conv.id));
+    await refreshReplyState(db, conv.id);
 
     return c.json(toMessage(msg), 201);
   },
@@ -3334,6 +3431,8 @@ api.openapi(
     }
 
     await db.delete(schema.messages).where(eq(schema.messages.id, msg.id));
+    // A queued reply counted as answering; discarding it may not leave one.
+    await refreshReplyState(db, msg.conversationId);
     return c.json({ ok: true }, 200);
   },
 );
@@ -3377,6 +3476,8 @@ api.openapi(
         .update(schema.conversations)
         .set({ unread: 1 })
         .where(eq(schema.conversations.id, row.conversationId));
+      // A reply that never went out no longer answers the contact.
+      await refreshReplyState(db, row.conversationId);
     }
     return c.json({ ok: true }, 200);
   },
@@ -3494,6 +3595,7 @@ api.openapi(
         .update(schema.conversations)
         .set({ unread: 1 })
         .where(eq(schema.conversations.id, msg.conversationId));
+      await refreshReplyState(db, msg.conversationId);
     }
     return c.json({ ok: true, status: next, changed: true }, 200);
   },

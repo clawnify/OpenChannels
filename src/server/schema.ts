@@ -85,11 +85,25 @@ export const conversations = sqliteTable(
      */
     assigneeId: text("assignee_id"),
     assigneeName: text("assignee_name"),
+    /**
+     * When the contact last wrote; null when they never have. Stored rather
+     * than derived per request so "Replied" and "Needs reply" walk an index
+     * instead of every thread's messages on each poll. Both columns are
+     * derived from the thread by `replyState` in routes.ts, never set by hand.
+     */
+    lastInboundAt: text("last_inbound_at"),
+    /**
+     * 1 while the contact's latest message has no reply after it. Unlike
+     * `unread`, reading the thread doesn't clear it; only a reply does.
+     */
+    needsReply: integer("needs_reply").notNull().default(0),
     createdAt: text("created_at").notNull().$default(() => new Date().toISOString()),
   },
   (t) => ({
     byOrgRecency: index("conversations_by_org_recency").on(t.orgId, t.lastMessageAt),
     byOrgAssignee: index("conversations_by_org_assignee").on(t.orgId, t.assigneeId),
+    byOrgInbound: index("conversations_by_org_inbound").on(t.orgId, t.lastInboundAt),
+    byOrgNeedsReply: index("conversations_by_org_needs_reply").on(t.orgId, t.needsReply, t.lastInboundAt),
     byOrgContact: uniqueIndex("conversations_by_org_contact").on(t.orgId, t.contactId),
   }),
 );

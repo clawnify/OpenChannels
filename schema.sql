@@ -38,11 +38,15 @@ CREATE TABLE IF NOT EXISTS `conversations` (
 	`last_message_preview` text DEFAULT '' NOT NULL,
 	`assignee_id` text,
 	`assignee_name` text,
+	`last_inbound_at` text,
+	`needs_reply` integer DEFAULT 0 NOT NULL,
 	`created_at` text NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS `conversations_by_org_recency` ON `conversations` (`org_id`,`last_message_at`);
 CREATE INDEX IF NOT EXISTS `conversations_by_org_assignee` ON `conversations` (`org_id`,`assignee_id`);
+CREATE INDEX IF NOT EXISTS `conversations_by_org_inbound` ON `conversations` (`org_id`,`last_inbound_at`);
+CREATE INDEX IF NOT EXISTS `conversations_by_org_needs_reply` ON `conversations` (`org_id`,`needs_reply`,`last_inbound_at`);
 CREATE UNIQUE INDEX IF NOT EXISTS `conversations_by_org_contact` ON `conversations` (`org_id`,`contact_id`);
 CREATE TABLE IF NOT EXISTS `messages` (
 	`id` text PRIMARY KEY NOT NULL,
