@@ -39,10 +39,12 @@ per conversation when backfilling history:
    - `channel`: `whatsapp` | `telegram` | `slack` | `email` | `sms` | `other`
    - `contact`: `{ handle, name? }` — the channel-native address (phone, email,
      @username) and display name if known
-   - `message`: `{ kind: "inbound" | "outbound", body, externalId?, at? }` —
+   - `message`: `{ kind: "inbound" | "outbound" | "reaction", body, externalId?, at? }` —
      `externalId` is the channel's own message id (repeats are dropped, so
      re-ingesting is always safe); `at` is the original ISO timestamp for
-     history backfill; use `kind: "outbound"` for messages you already sent
+     history backfill; use `kind: "outbound"` for messages you already sent,
+     and `kind: "reaction"` with the emoji as `body` for an emoji reaction (an
+     empty body means it was removed, and the inbox drops it)
    - `subject`: email subject, when there is one
 2. When you *act* on a conversation (book something, draft something, escalate,
    update a record), log one short line:
@@ -147,11 +149,17 @@ through to it, and a screenshot always has a link that reproduces it.
 - `/c/<conversationId>` — one thread, open.
 - Append `?agent` when browsing it yourself for larger targets.
 
+Three more views list who has written in: `/needs-reply` (their latest message
+has no answer yet, even if someone has read it), `/unread` (nobody has opened
+it since) and `/replied` (they have written or reacted at least once).
+
 ## API anchors
 
 Discovery: `GET /llms.txt` / `GET /api/openapi.json`. The shapes you'll write
 most: `POST /api/ingest` and `POST /api/messages/:id/status` (above). Also
-there when needed: `GET /api/conversations` (paginated, `?search=`),
+there when needed: `GET /api/conversations` (paginated, `?search=`, and
+`?only=needs_reply` for who is still waiting on an answer; a freeform reply
+that goes out takes a thread out of it, a template does not),
 `GET /api/conversations/:id/messages`, `POST /api/conversations/:id/comment`
 (internal note), `PATCH /api/conversations/:id` (`{"status":"closed"}`).
 
