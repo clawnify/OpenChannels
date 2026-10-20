@@ -86,15 +86,17 @@ export const conversations = sqliteTable(
     assigneeId: text("assignee_id"),
     assigneeName: text("assignee_name"),
     /**
-     * When the contact last wrote; null when they never have. Stored rather
-     * than derived per request so "Replied" and "Needs reply" walk an index
-     * instead of every thread's messages on each poll. Both columns are
-     * derived from the thread by `replyState` in routes.ts, never set by hand.
+     * When the contact last wrote or reacted; null when they never have.
+     * Stored rather than derived per request so "Replied" and "Needs reply"
+     * walk an index instead of every thread's messages on each poll. Both
+     * columns are derived from the thread by `replyState` in routes.ts, never
+     * set by hand.
      */
     lastInboundAt: text("last_inbound_at"),
     /**
-     * 1 while the contact's latest message has no reply after it. Unlike
-     * `unread`, reading the thread doesn't clear it; only a reply does.
+     * 1 while the contact's latest message (not a reaction) has no reply after
+     * it. Unlike `unread`, reading the thread doesn't clear it; only a reply
+     * does.
      */
     needsReply: integer("needs_reply").notNull().default(0),
     createdAt: text("created_at").notNull().$default(() => new Date().toISOString()),

@@ -682,7 +682,7 @@ function EmptyList({
     needs_reply:
       "Nobody is waiting on a reply. A thread lands here when someone writes in, and stays until it is answered, even once it has been read.",
     unread: "Nothing unread. A thread lands here when someone writes in, until someone opens it.",
-    replied: "Nobody has written in yet. A thread lands here once the contact sends their first message.",
+    replied: "Nobody has written in yet. A thread lands here once the contact writes or reacts.",
   };
   if (waiting[filter.kind]) {
     return (

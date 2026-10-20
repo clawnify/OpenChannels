@@ -132,12 +132,12 @@ const ConversationSchema = z
     status: z.string(),
     unread: z.number(),
     /**
-     * The contact's latest message has no reply after it. Reading the thread
-     * doesn't clear it, and neither does an automated template; a person's
-     * reply or any freeform message does.
+     * The contact's latest message has no reply after it. Neither reading the
+     * thread nor sending a template clears it, and a reaction never sets it;
+     * a freeform reply that went out does.
      */
     needsReply: z.boolean(),
-    /** When the contact last wrote; null when they never have. */
+    /** When the contact last wrote or reacted; null when they never have. */
     lastInboundAt: z.string().nullable(),
     lastMessageAt: z.string(),
     lastMessagePreview: z.string(),
@@ -448,9 +448,9 @@ async function windowsFor(
   );
   if (windowed.length === 0) return out;
 
-  // D1 allows at most 100 bound parameters per statement, and `kind` already
-  // takes one — a full page of 100 conversations binds 101 and the query
-  // fails. Page the id list under the cap and merge.
+  // D1 allows at most 100 bound parameters per statement, and the kinds
+  // already take two, so a full page of 100 conversations binds 102 and the
+  // query fails. Page the id list under the cap and merge.
   const CHUNK = 80;
   const lastInbound: { conversationId: string; at: string }[] = [];
   for (let i = 0; i < windowed.length; i += CHUNK) {
@@ -463,7 +463,8 @@ async function windowsFor(
         .from(schema.messages)
         .where(
           and(
-            eq(schema.messages.kind, "inbound"),
+            // Reactions count, as they did when they arrived as inbound messages.
+            inArray(schema.messages.kind, ["inbound", "reaction"]),
             inArray(
               schema.messages.conversationId,
               windowed.slice(i, i + CHUNK).map((c) => c.id),
@@ -808,23 +809,27 @@ async function findConversation(
 /* -------------------------------- reply state ------------------------------ */
 
 /**
- * The contact's latest message, and our latest reply to it, read from the
- * thread itself. Raw SQL because it runs inside an UPDATE of `conversations`
- * and must correlate to the row being written.
+ * The contact's latest message, the latest time we heard from them at all,
+ * and our latest reply, read from the thread itself. Raw SQL because it runs
+ * inside an UPDATE of `conversations` and must correlate to the row written.
  *
- * A reply is an outbound message that did not fail and is not an automated
- * template. Templates the agent or another app sends go out in batches, and a
- * reminder sent to a hundred people answers none of their questions. So a
- * template counts only when a signed-in person sent it from the thread, which
- * is how anyone answers once the 24-hour window has shut. Freeform always
- * counts: somebody wrote back.
+ * A reply is a freeform message that went out. Templates never count: they
+ * are how batches and automations write, whoever runs them (the agent,
+ * another app, or a person scripting a send from outside the inbox), and a
+ * reminder sent to a hundred people answers none of their questions. When a
+ * template really was the answer, closing the thread clears it.
+ *
+ * A reaction is the contact responding without asking anything, so it counts
+ * toward when we last heard from them (Replied) and never as a question.
  */
 const lastInboundSql = sql`(SELECT max(m.created_at) FROM messages m
   WHERE m.conversation_id = conversations.id AND m.kind = 'inbound')`;
+const lastHeardSql = sql`(SELECT max(m.created_at) FROM messages m
+  WHERE m.conversation_id = conversations.id AND m.kind IN ('inbound', 'reaction'))`;
 const lastReplySql = sql`(SELECT max(m.created_at) FROM messages m
   WHERE m.conversation_id = conversations.id AND m.kind = 'outbound'
-    AND coalesce(m.status, '') NOT IN ('failed', 'undelivered')
-    AND (m.template_name IS NULL OR m.user_id IS NOT NULL))`;
+    AND m.template_name IS NULL
+    AND coalesce(m.status, '') NOT IN ('failed', 'undelivered'))`;
 
 /**
  * The `lastInboundAt` / `needsReply` pair, derived from the thread. Every write
@@ -833,7 +838,7 @@ const lastReplySql = sql`(SELECT max(m.created_at) FROM messages m
  * the same answer.
  */
 const replyState = {
-  lastInboundAt: lastInboundSql,
+  lastInboundAt: lastHeardSql,
   needsReply: sql`coalesce(${lastInboundSql}, '') > coalesce(${lastReplySql}, '')`,
 };
 
@@ -888,7 +893,13 @@ const IngestSchema = z
       linked: z.object({ appId: z.string().min(1), ref: z.string().min(1) }).optional(),
     }),
     message: z.object({
-      kind: z.enum(["inbound", "outbound"]).default("inbound"),
+      /**
+       * `reaction` for an emoji reaction, with the emoji as `body`. An empty
+       * body means it was removed, and is dropped. A reaction shows in the
+       * thread and counts as the contact responding, but there is nothing to
+       * answer, so it never puts a thread in Needs reply.
+       */
+      kind: z.enum(["inbound", "outbound", "reaction"]).default("inbound"),
       // Not .min(1): a photo sent with no caption has an empty body and is
       // still a message. Requiring text rejected those outright.
       body: z.string(),
@@ -919,7 +930,7 @@ api.openapi(
     path: "/api/ingest",
     summary: "Ingest a channel message (agent only)",
     description:
-      "Mirror one inbound or outbound channel message into the inbox. Creates the contact and conversation on first sight, reopens closed conversations on new inbound, and is idempotent on message.externalId. Use kind=outbound for messages the agent already sent itself (history sync).",
+      "Mirror one inbound or outbound channel message into the inbox. Creates the contact and conversation on first sight, reopens closed conversations on new inbound, and is idempotent on message.externalId. Use kind=outbound for messages the agent already sent itself (history sync), and kind=reaction for an emoji reaction (empty body when it was removed).",
     request: { body: jsonBody(IngestSchema) },
     responses: {
       200: jsonRes(
@@ -1029,17 +1040,29 @@ api.openapi(
       if (dupe) return c.json({ conversationId: conv.id, messageId: dupe.id, duplicate: true }, 200);
     }
 
-    const inbound = input.message.kind === "inbound";
+    // Flows written before kind=reaction existed send a reaction as an inbound
+    // message whose media type is "reaction" with no file attached.
+    const reaction =
+      input.message.kind === "reaction" ||
+      (input.message.kind === "inbound" &&
+        !input.message.media?.ref?.trim() &&
+        input.message.media?.type?.trim() === "reaction");
+    // A removed reaction carries no emoji. There is nothing to show.
+    if (reaction && !input.message.body.trim()) {
+      return c.json({ conversationId: conv.id, messageId: null, duplicate: false }, 200);
+    }
+    const kind = reaction ? "reaction" : input.message.kind;
+    const inbound = kind === "inbound";
     const mediaRef = input.message.media?.ref?.trim() || null;
     const [msg] = await db
       .insert(schema.messages)
       .values({
         orgId: org,
         conversationId: conv.id,
-        kind: input.message.kind,
+        kind,
         body: input.message.body,
-        authorName: input.message.authorName ?? (inbound ? contact.name ?? contact.handle : "Agent"),
-        status: inbound ? null : "sent",
+        authorName: input.message.authorName ?? (kind === "outbound" ? "Agent" : contact.name ?? contact.handle),
+        status: kind === "outbound" ? "sent" : null,
         externalId: input.message.externalId ?? null,
         mediaRef,
         mediaType: (mediaRef && input.message.media?.type?.trim()) || null,
@@ -1067,25 +1090,29 @@ api.openapi(
       }
     }
 
-    await db
-      .update(schema.conversations)
-      .set({
-        subject: input.subject ?? conv.subject,
-        // History backfill can arrive out of order — only advance the clock.
-        ...(at >= conv.lastMessageAt
-          ? {
-              lastMessageAt: at,
-              lastMessagePreview: preview(
-                input.message.body ||
-                  (input.message.media?.ref?.trim()
-                    ? `[${input.message.media.type?.trim() || "attachment"}]`
-                    : ""),
-              ),
-            }
-          : {}),
-        ...(inbound ? { unread: 1, status: "open" } : {}),
-      })
-      .where(eq(schema.conversations.id, conv.id));
+    // A reaction lives inside the thread. It doesn't move the thread up the
+    // list, reopen it, or mark it unread: nobody needs to act on it.
+    if (!reaction) {
+      await db
+        .update(schema.conversations)
+        .set({
+          subject: input.subject ?? conv.subject,
+          // History backfill can arrive out of order — only advance the clock.
+          ...(at >= conv.lastMessageAt
+            ? {
+                lastMessageAt: at,
+                lastMessagePreview: preview(
+                  input.message.body ||
+                    (input.message.media?.ref?.trim()
+                      ? `[${input.message.media.type?.trim() || "attachment"}]`
+                      : ""),
+                ),
+              }
+            : {}),
+          ...(inbound ? { unread: 1, status: "open" } : {}),
+        })
+        .where(eq(schema.conversations.id, conv.id));
+    }
     await refreshReplyState(db, conv.id);
 
     return c.json({ conversationId: conv.id, messageId: msg.id, duplicate: false }, 200);
@@ -1100,7 +1127,7 @@ api.openapi(
     path: "/api/conversations",
     summary: "List conversations",
     description:
-      "Paginated inbox, most recent first. Filter by channel and status (default open); search matches contact name/handle and the last message preview.\n\n`only` narrows to who has written in: `needs_reply` (their latest message has no reply yet; reading it doesn't count, and neither does an automated template), `replied` (they have written at least once) or `unread` (nobody has opened it since). `needs_reply` and `replied` are ordered by the contact's latest message, newest first.",
+      "Paginated inbox, most recent first. Filter by channel and status (default open); search matches contact name/handle and the last message preview.\n\n`only` narrows to who has written in: `needs_reply` (their latest message has no written reply yet; reading it doesn't count, and neither does a template), `replied` (they have written or reacted at least once) or `unread` (nobody has opened it since). `needs_reply` and `replied` are ordered by the contact's latest message, newest first.",
     request: {
       query: z.object({
         channel: z.enum(CHANNELS).optional(),
@@ -1163,7 +1190,7 @@ api.openapi(
         THEN json_object('at', m.created_at, 'error', m.error) END
       FROM messages m
       WHERE m.conversation_id = ${schema.conversations.id}
-        AND m.kind IN ('inbound','outbound')
+        AND m.kind IN ('inbound','outbound','reaction')
       ORDER BY m.created_at DESC, m.id DESC
       LIMIT 1
     )`;
@@ -1730,7 +1757,7 @@ api.openapi(
     path: "/api/conversations/:id/messages",
     summary: "List messages in a conversation",
     description:
-      "Chronological page of the thread — inbound/outbound messages, agent audit lines (kind=system) and internal notes (kind=comment). Use before=<ISO timestamp> to page further back.",
+      "Chronological page of the thread — inbound/outbound messages, the contact's reactions (kind=reaction), agent audit lines (kind=system) and internal notes (kind=comment). Use before=<ISO timestamp> to page further back.",
     request: {
       params: IdParam,
       query: z.object({
@@ -2013,10 +2040,11 @@ api.openapi(
       .set({
         lastMessageAt: now,
         lastMessagePreview: preview(body || (attachment ? `[${attachment.type}]` : "")),
-        // Unread means no person has looked since the contact wrote. A send
-        // from the agent or another app (a batch reminder, say) is not
-        // someone reading the thread, so only a signed-in sender clears it.
-        ...(u ? { unread: 0 } : {}),
+        // Unread means no person has looked since the contact wrote. Only a
+        // send from this inbox's own screen proves someone had the thread
+        // open; one from the agent, another app or a script run elsewhere (a
+        // batch reminder, say) does not.
+        ...(caller(c) === "user" ? { unread: 0 } : {}),
       })
       .where(eq(schema.conversations.id, conv.id));
     await refreshReplyState(db, conv.id);
