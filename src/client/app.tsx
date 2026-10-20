@@ -18,6 +18,32 @@ import { Avatar, SectionLabel, CHANNELS, channelClass, channelMeta, timeAgo } fr
 
 const POLL_MS = 5000;
 const PAGE_SIZE = 50;
+/** The most the conversations route returns in one request. */
+const MAX_LIMIT = 100;
+
+/**
+ * The first `count` conversations, in requests of at most MAX_LIMIT. Every
+ * poll re-reads all of them rather than only the first page: threads reorder
+ * as messages arrive, so a page fetched once and kept would show some threads
+ * twice and lose the one pushed across its edge.
+ */
+async function listFirst(
+  params: Omit<Parameters<typeof listConversations>[0], "limit" | "offset">,
+  count: number,
+): Promise<{ items: Conversation[]; total: number }> {
+  const offsets = Array.from({ length: Math.ceil(count / MAX_LIMIT) }, (_, i) => i * MAX_LIMIT);
+  const pages = await Promise.all(
+    offsets.map((offset) =>
+      listConversations({ ...params, offset, limit: Math.min(MAX_LIMIT, count - offset) }),
+    ),
+  );
+  // Requests that run side by side can see a thread move between them.
+  const seen = new Set<string>();
+  const items = pages
+    .flatMap((p) => p.items)
+    .filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));
+  return { items, total: pages[0].total };
+}
 
 /** Sidebar filter: the whole inbox, a slice of it, one channel, or the closed archive. */
 type Filter =
@@ -222,6 +248,10 @@ export function App() {
   const [search, setSearch] = useState("");
   const [conversations, setConversations] = useState<Conversation[] | null>(null);
   const [total, setTotal] = useState(0);
+  /** How many conversations the list has asked for. "Show more" raises it. */
+  const [limit, setLimit] = useState(PAGE_SIZE);
+  /** Only the latest load may render, so a slow superseded one can't overwrite it. */
+  const loadSeq = useRef(0);
   // The open thread lives in the URL as /c/<id>, so a conversation is a place
   // you can link to, refresh, and reach with the back button — not a mode the
   // app happens to be in. Initialised from the address bar rather than null, so
@@ -320,16 +350,22 @@ export function App() {
           ? filter.kind
           : undefined,
       search: debouncedSearch || undefined,
-      limit: PAGE_SIZE,
     };
-    const [page, s] = await Promise.all([listConversations(params), getStats()]);
+    const seq = ++loadSeq.current;
+    const [page, s] = await Promise.all([listFirst(params, limit), getStats()]);
+    if (seq !== loadSeq.current) return;
     setConversations(page.items);
     setTotal(page.total);
     setStats(s);
+  }, [filter, debouncedSearch, limit]);
+
+  // A new view starts from the top, with one page.
+  useEffect(() => {
+    setConversations(null);
+    setLimit(PAGE_SIZE);
   }, [filter, debouncedSearch]);
 
   useEffect(() => {
-    setConversations(null);
     load().catch(() => {});
   }, [load]);
 
@@ -535,15 +571,33 @@ export function App() {
               onNew={() => setShowNew(true)}
             />
           ) : (
-            conversations.map((c) => (
-              <ConversationRow
-                key={c.id}
-                conversation={c}
-                active={c.id === selectedId}
-                onClick={() => select(c)}
-                byInbound={filter.kind === "needs_reply" || filter.kind === "replied"}
-              />
-            ))
+            <>
+              {conversations.map((c) => (
+                <ConversationRow
+                  key={c.id}
+                  conversation={c}
+                  active={c.id === selectedId}
+                  onClick={() => select(c)}
+                  byInbound={filter.kind === "needs_reply" || filter.kind === "replied"}
+                />
+              ))}
+              {conversations.length < total ? (
+                <div className="flex justify-center p-3">
+                  {/* Still short of what was asked for: a load is in flight, or the
+                      poll retries it. */}
+                  <button
+                    type="button"
+                    onClick={() => setLimit(conversations.length + PAGE_SIZE)}
+                    disabled={conversations.length < limit}
+                    className="btn btn-ghost text-sm"
+                  >
+                    {conversations.length < limit
+                      ? "Loading…"
+                      : `Show more (${total - conversations.length} older)`}
+                  </button>
+                </div>
+              ) : null}
+            </>
           )}
           {hits && hits.length > 0 ? (
             <div className="border-t border-border">
