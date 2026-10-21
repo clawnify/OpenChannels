@@ -1,7 +1,7 @@
 {
   "$schema": "https://app.clawnify.com/schema/v1/clawnify.json",
   "version": 1,
-  "name": "OpenChannels",
+  "name": "Inbox",
   "icon": "icon.svg",
   "description": "One inbox for every channel your agent handles \u2014 WhatsApp, Telegram, Slack and email conversations mirrored into a single reviewable timeline, with agent-mediated replies and a per-thread audit trail of what the agent did.",
   "app": {
