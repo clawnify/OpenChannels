@@ -1911,8 +1911,9 @@ api.openapi(
       templateVariables: string | null;
     } = { templateName: null, templateLanguage: null, templateVariables: null };
 
+    let tpl: typeof schema.templates.$inferSelect | undefined;
     if (input.template) {
-      const [tpl] = await db
+      [tpl] = await db
         .select()
         .from(schema.templates)
         .where(
@@ -1980,11 +1981,13 @@ api.openapi(
       try {
         const sent = await sender(c.env, contact.handle, {
           body,
-          template: input.template
+          template: tpl
             ? {
-                name: templateFields.templateName!,
-                language: templateFields.templateLanguage!,
-                variables: input.template.variables,
+                name: tpl.name,
+                language: tpl.language,
+                variables: input.template!.variables,
+                category: tpl.category,
+                externalId: tpl.externalId,
               }
             : undefined,
           attachment,
@@ -2006,6 +2009,12 @@ api.openapi(
         // "sent" here is how a silently-dropped message looks successful.
         status = "accepted";
         externalId = sent.externalId;
+        if (tpl && sent.category) {
+          await db
+            .update(schema.templates)
+            .set({ category: sent.category })
+            .where(eq(schema.templates.id, tpl.id));
+        }
       } catch (err) {
         // Record the failure on the message rather than losing the draft —
         // the thread shows why, and the text is still there to retry.
@@ -2799,7 +2808,11 @@ api.openapi(
  *
  * Channels absent here still queue to /api/outbox for the agent, unchanged.
  */
-type SendResult = { externalId: string | null };
+type SendResult = {
+  externalId: string | null;
+  /** Set when Meta's category for the template differs from ours. */
+  category?: string;
+};
 
 /** Which number outbound WhatsApp leaves from. */
 const DEFAULT_PHONE_KEY = "whatsapp_default_phone_number_id";
@@ -2970,7 +2983,15 @@ const CHANNEL_SENDERS: Record<
     to: string,
     message: {
       body: string;
-      template?: { name: string; language: string; variables: Record<string, string> };
+      template?: {
+        name: string;
+        language: string;
+        variables: Record<string, string>;
+        /** Category as last synced — picks the endpoint. */
+        category: string;
+        /** Meta's template id, to re-read the category when Meta disagrees. */
+        externalId: string | null;
+      };
       attachment?: Attachment | null;
       /** Explicit sending number — a human chose it. Always honoured. */
       fromPhoneNumberId?: string | null;
@@ -3045,22 +3066,84 @@ const CHANNEL_SENDERS: Record<
           text: { preview_url: false, body: message.body },
         };
 
-    const result = message.template
-      ? await client.post(`${objectEndpoint(from.id, "phone number ID")}/messages`, {
-          messaging_product: "whatsapp",
-          to: toDigits,
-          type: "template",
-          template: {
-            name: message.template.name,
-            language: { code: message.template.language },
-            components: templateComponents(message.template.variables),
-          },
-        })
-      : await client.post(`${objectEndpoint(from.id, "phone number ID")}/messages`, payload);
-
+    const phone = objectEndpoint(from.id, "phone number ID");
+    if (message.template) {
+      return sendTemplate(client, phone, message.template, {
+        messaging_product: "whatsapp",
+        to: toDigits,
+        type: "template",
+        template: {
+          name: message.template.name,
+          language: { code: message.template.language },
+          components: templateComponents(message.template.variables),
+        },
+      });
+    }
+    const result = await client.post(`${phone}/messages`, payload);
     return { externalId: wamidOf(result) };
   },
 };
+
+/** A send the provider refused outright. Never a timeout or a 5xx, which may have gone out. */
+const REFUSED = /\b4\d\d: /;
+
+/**
+ * Sends a template on the endpoint its category belongs to. MARKETING goes to
+ * the Marketing Messages API: Meta ends marketing on the Cloud API on
+ * 2027-10-13. Everything else stays on /messages.
+ *
+ * The stored category can be stale. It refreshes when someone opens the
+ * composer, and flows send without anyone opening it, while Meta reclassifies
+ * templates on its own. So a refusal re-reads the category from Meta rather
+ * than trusting ours, and sends again on the right endpoint. Only after a
+ * refusal: a send that may have gone out is never repeated.
+ *
+ * A MARKETING template the Marketing Messages API refuses (the account has not
+ * accepted its terms, or the template has not reached it yet) falls back to
+ * /messages, which carries marketing until the sunset. After that the
+ * fallback fails too, and the original reason is what the thread shows.
+ */
+async function sendTemplate(
+  client: ReturnType<typeof whatsappBusiness>["client"],
+  phone: string,
+  template: { category: string; externalId: string | null },
+  body: Record<string, unknown>,
+): Promise<SendResult> {
+  const edge = (category: string) => (category === "MARKETING" ? "marketing_messages" : "messages");
+  const post = async (to: string) => wamidOf(await client.post(`${phone}/${to}`, body));
+
+  try {
+    return { externalId: await post(edge(template.category)) };
+  } catch (err) {
+    if (!REFUSED.test(`${err}`)) throw err;
+    const current = template.externalId ? await metaTemplateCategory(client, template.externalId) : null;
+    if (current && edge(current) !== edge(template.category)) {
+      return { externalId: await post(edge(current)), category: current };
+    }
+    if (edge(template.category) !== "marketing_messages") throw err;
+    try {
+      return { externalId: await post("messages") };
+    } catch {
+      throw err;
+    }
+  }
+}
+
+/** The category Meta holds for a template now, or null if it can't be read. */
+async function metaTemplateCategory(
+  client: ReturnType<typeof whatsappBusiness>["client"],
+  templateId: string,
+): Promise<string | null> {
+  try {
+    const t = (await client.get(objectEndpoint(templateId, "template ID"), {
+      query: { fields: "category" },
+    })) as { category?: unknown; data?: { category?: unknown } } | null;
+    const category = t?.category ?? t?.data?.category;
+    return typeof category === "string" ? category.toUpperCase() : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Meta takes template variables as positional BODY parameters, in order —
