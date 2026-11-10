@@ -9,17 +9,32 @@
     "database": true,
     "storage": true,
     "credentials": [
-      "whatsapp-business"
+      "whatsapp-business",
+      "twilio"
     ]
   },
   "api": {
     "public_routes": [
-      "/api/media/**"
+      "/api/media/**",
+      {
+        "path": "/api/sms/inbound",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/sms/status",
+        "methods": [
+          "POST"
+        ]
+      }
     ]
   },
   "env": {
     "optional": [
-      "CRM_APP_ID"
+      "CRM_APP_ID",
+      "TWILIO_ACCOUNT_SID",
+      "TWILIO_AUTH_TOKEN"
     ]
   }
 }

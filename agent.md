@@ -9,6 +9,18 @@ directly and a human's message goes out the moment they click Send. You are not
 in that path — don't relay it, don't confirm it. Everything else still queues to
 `/api/outbox` for you.
 
+SMS works the same way once the org has connected **Twilio** (Account SID and
+Auth Token), or has set `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` as
+environment variables the way OpenDialer takes them: replies go out from the app, and Twilio posts incoming texts and
+delivery receipts straight to the app, so don't mirror SMS that arrive there.
+To set it up, `GET /api/sms/numbers` lists the account's numbers and
+`POST /api/sms/numbers/:id/connect` points one at this inbox and makes it the
+default sender. A number whose texts already go somewhere else answers `409`:
+ask the person before sending `replace: true`, which cuts that system off.
+Without Twilio, SMS replies queue for you as before. US numbers need US
+registration on Twilio (toll-free verification or A2P 10DLC) before carriers
+deliver them; error 30034 on a thread means that is missing.
+
 ## Division of labour
 
 - **Mirror, don't summarize.** Post the raw message body to `/api/ingest` and
