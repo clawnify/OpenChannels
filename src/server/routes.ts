@@ -23,6 +23,12 @@ type Env = {
     UPLOADS?: R2Bucket;
     /** Integration-owned WABA configuration, injected at deployment. */
     WHATSAPP_BUSINESS_WABA_ID?: string;
+    /**
+     * The org this deployment belongs to, set by the platform next to the
+     * credentials binding. Public routes carry no identity headers, so the
+     * Twilio webhooks read the org from here.
+     */
+    CLAWNIFY_ORG_ID?: string;
   };
 };
 const api = new OpenAPIHono<Env>();
@@ -39,6 +45,45 @@ const dbFor = (env: Env["Bindings"]) => getDB(env, { schema }) as DB;
 // Open Channels-only deployment, including its refreshed bearer-token fallback.
 const WHATSAPP_SERVICE = "whatsapp-business";
 const META_GRAPH_VERSION = "v23.0";
+
+/**
+ * SMS goes through the org's Twilio connection (Account SID + Auth Token). The
+ * connection serves them as one "SID:token" string, which the proxy sends as
+ * Basic auth and the webhooks need apart: the SID addresses the account, the
+ * token verifies that a webhook really came from Twilio.
+ */
+const TWILIO_SERVICE = "twilio";
+
+/** The app has no credential for a channel, so a send can't be made from here. */
+class NotConnected extends Error {}
+
+async function twilioAccount(env: Env["Bindings"]) {
+  const client = connect(TWILIO_SERVICE, env as never);
+  let credential: string | null = null;
+  try {
+    credential = await (client as unknown as { token(): Promise<string | null> }).token();
+  } catch {
+    credential = null;
+  }
+  const split = credential?.indexOf(":") ?? -1;
+  const sid = split > 0 ? credential!.slice(0, split) : "";
+  if (!/^AC[0-9a-f]{32}$/i.test(sid)) {
+    throw new NotConnected(
+      "Twilio is not connected: connect it in Integrations with the Account SID and Auth Token",
+    );
+  }
+  return { client, sid, authToken: credential!.slice(split + 1) };
+}
+
+const twilioEndpoint = (sid: string, resource: string) => `/2010-04-01/Accounts/${sid}/${resource}`;
+
+/** Twilio takes form posts, not JSON. */
+const twilioForm = (fields: Record<string, string | undefined>) => {
+  const form = new URLSearchParams();
+  for (const [k, v] of Object.entries(fields)) if (v !== undefined) form.set(k, v);
+  return form.toString();
+};
+const FORM = { headers: { "content-type": "application/x-www-form-urlencoded" } };
 
 function metaId(value: string | undefined, label: string): string {
   const id = value?.trim() ?? "";
@@ -296,7 +341,14 @@ async function storeMedia(
     return null;
   }
 
-  const res = await fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
+  // Twilio serves MMS media from its own API, behind the account's Basic auth
+  // when the account enforces it. The header is harmless when it doesn't.
+  let authorization = token ? `Bearer ${token}` : null;
+  if (new URL(url).hostname === "api.twilio.com") {
+    const { sid, authToken } = await twilioAccount(env);
+    authorization = `Basic ${btoa(`${sid}:${authToken}`)}`;
+  }
+  const res = await fetch(url, authorization ? { headers: { Authorization: authorization } } : undefined);
   if (!res.ok) return null;
   const bytes = await res.arrayBuffer();
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_MEDIA_BYTES) return null;
@@ -951,173 +1003,186 @@ api.openapi(
       return c.json({ error: "only the agent may ingest messages" }, 403);
     }
 
-    const input = c.req.valid("json");
-    const db = dbFor(c.env);
-    const now = new Date().toISOString();
-    const at = input.message.at ?? now;
-
-    // Best-effort here, never rejected: this is a message that already reached
-    // us, and dropping a real inbound because its handle is oddly shaped loses
-    // something a person actually said. An un-canonicalisable handle is stored
-    // as given — worse for matching, but nothing is lost.
-    const handle = canonicalHandle(input.channel, input.contact.handle) ?? input.contact.handle;
-
-    // Contact: find or create; refresh name/avatar when provided.
-    let [contact] = await db
-      .select()
-      .from(schema.contacts)
-      .where(
-        and(
-          eq(schema.contacts.orgId, org),
-          eq(schema.contacts.channel, input.channel),
-          eq(schema.contacts.handle, handle),
-        ),
-      )
-      .limit(1);
-    if (!contact) {
-      [contact] = await db
-        .insert(schema.contacts)
-        .values({
-          orgId: org,
-          channel: input.channel,
-          handle,
-          // Provider-supplied → profileName. `name` is the human's to set.
-          profileName: input.contact.name ?? null,
-          avatarUrl: input.contact.avatarUrl ?? null,
-          linkedAppId: input.contact.linked?.appId ?? null,
-          linkedRef: input.contact.linked?.ref ?? null,
-        })
-        .returning();
-    } else if (
-      (input.contact.name && input.contact.name !== contact.profileName) ||
-      (input.contact.avatarUrl && input.contact.avatarUrl !== contact.avatarUrl) ||
-      (input.contact.linked && input.contact.linked.ref !== contact.linkedRef)
-    ) {
-      [contact] = await db
-        .update(schema.contacts)
-        .set({
-          // Only the profile name — a curated `name` outlives every inbound.
-          profileName: input.contact.name ?? contact.profileName,
-          avatarUrl: input.contact.avatarUrl ?? contact.avatarUrl,
-          // An existing link is never cleared by an ingest that omits one:
-          // absence here means "didn't look it up", not "no longer linked".
-          linkedAppId: input.contact.linked?.appId ?? contact.linkedAppId,
-          linkedRef: input.contact.linked?.ref ?? contact.linkedRef,
-        })
-        .where(eq(schema.contacts.id, contact.id))
-        .returning();
-    }
-
-    // Conversation: one per contact; new inbound reopens a closed thread.
-    let [conv] = await db
-      .select()
-      .from(schema.conversations)
-      .where(and(eq(schema.conversations.orgId, org), eq(schema.conversations.contactId, contact.id)))
-      .limit(1);
-    if (!conv) {
-      [conv] = await db
-        .insert(schema.conversations)
-        .values({
-          orgId: org,
-          contactId: contact.id,
-          channel: input.channel,
-          subject: input.subject ?? null,
-          lastMessageAt: at,
-          lastMessagePreview: preview(input.message.body),
-        })
-        .returning();
-    }
-
-    // Idempotency: same externalId → acknowledge without inserting.
-    if (input.message.externalId) {
-      const [dupe] = await db
-        .select({ id: schema.messages.id })
-        .from(schema.messages)
-        .where(
-          and(eq(schema.messages.orgId, org), eq(schema.messages.externalId, input.message.externalId)),
-        )
-        .limit(1);
-      if (dupe) return c.json({ conversationId: conv.id, messageId: dupe.id, duplicate: true }, 200);
-    }
-
-    // Flows written before kind=reaction existed send a reaction as an inbound
-    // message whose media type is "reaction" with no file attached.
-    const reaction =
-      input.message.kind === "reaction" ||
-      (input.message.kind === "inbound" &&
-        !input.message.media?.ref?.trim() &&
-        input.message.media?.type?.trim() === "reaction");
-    // A removed reaction carries no emoji. There is nothing to show.
-    if (reaction && !input.message.body.trim()) {
-      return c.json({ conversationId: conv.id, messageId: null, duplicate: false }, 200);
-    }
-    const kind = reaction ? "reaction" : input.message.kind;
-    const inbound = kind === "inbound";
-    const mediaRef = input.message.media?.ref?.trim() || null;
-    const [msg] = await db
-      .insert(schema.messages)
-      .values({
-        orgId: org,
-        conversationId: conv.id,
-        kind,
-        body: input.message.body,
-        authorName: input.message.authorName ?? (kind === "outbound" ? "Agent" : contact.name ?? contact.handle),
-        status: kind === "outbound" ? "sent" : null,
-        externalId: input.message.externalId ?? null,
-        mediaRef,
-        mediaType: (mediaRef && input.message.media?.type?.trim()) || null,
-        createdAt: at,
-      })
-      .returning();
-
-    // Keep the attachment's bytes now, while the channel still serves them:
-    // both reference shapes expire, and "we'll fetch it later" loses the file.
-    // Best-effort — a failed fetch leaves mediaRef in place (backfillable) and
-    // the timeline falls back to the filename, which is why the helper never
-    // throws.
-    if (mediaRef) {
-      try {
-        const stored = await storeMedia(c.env, org, msg.id, mediaRef);
-        if (stored) {
-          await db
-            .update(schema.messages)
-            .set({ mediaKey: stored.key, mediaMime: stored.mime, mediaName: stored.name })
-            .where(eq(schema.messages.id, msg.id));
-        }
-      } catch {
-        // Swallowed on purpose: the message arrived; losing its bytes is a
-        // degraded timeline, not a failed ingest.
-      }
-    }
-
-    // A reaction lives inside the thread. It doesn't move the thread up the
-    // list, reopen it, or mark it unread: nobody needs to act on it.
-    if (!reaction) {
-      await db
-        .update(schema.conversations)
-        .set({
-          subject: input.subject ?? conv.subject,
-          // History backfill can arrive out of order — only advance the clock.
-          ...(at >= conv.lastMessageAt
-            ? {
-                lastMessageAt: at,
-                lastMessagePreview: preview(
-                  input.message.body ||
-                    (input.message.media?.ref?.trim()
-                      ? `[${input.message.media.type?.trim() || "attachment"}]`
-                      : ""),
-                ),
-              }
-            : {}),
-          ...(inbound ? { unread: 1, status: "open" } : {}),
-        })
-        .where(eq(schema.conversations.id, conv.id));
-    }
-    await refreshReplyState(db, conv.id);
-
-    return c.json({ conversationId: conv.id, messageId: msg.id, duplicate: false }, 200);
+    return c.json(await ingestMessage(c.env, org, c.req.valid("json")), 200);
   },
 );
+
+type IngestInput = z.infer<typeof IngestSchema>;
+
+/**
+ * Mirror one channel message into the inbox. Shared by POST /api/ingest (the
+ * agent's flows) and the Twilio SMS webhook, which reaches the app directly.
+ */
+async function ingestMessage(
+  env: Env["Bindings"],
+  org: string,
+  input: IngestInput,
+): Promise<{ conversationId: string; messageId: string | null; duplicate: boolean }> {
+  const db = dbFor(env);
+  const now = new Date().toISOString();
+  const at = input.message.at ?? now;
+
+  // Best-effort here, never rejected: this is a message that already reached
+  // us, and dropping a real inbound because its handle is oddly shaped loses
+  // something a person actually said. An un-canonicalisable handle is stored
+  // as given — worse for matching, but nothing is lost.
+  const handle = canonicalHandle(input.channel, input.contact.handle) ?? input.contact.handle;
+
+  // Contact: find or create; refresh name/avatar when provided.
+  let [contact] = await db
+    .select()
+    .from(schema.contacts)
+    .where(
+      and(
+        eq(schema.contacts.orgId, org),
+        eq(schema.contacts.channel, input.channel),
+        eq(schema.contacts.handle, handle),
+      ),
+    )
+    .limit(1);
+  if (!contact) {
+    [contact] = await db
+      .insert(schema.contacts)
+      .values({
+        orgId: org,
+        channel: input.channel,
+        handle,
+        // Provider-supplied → profileName. `name` is the human's to set.
+        profileName: input.contact.name ?? null,
+        avatarUrl: input.contact.avatarUrl ?? null,
+        linkedAppId: input.contact.linked?.appId ?? null,
+        linkedRef: input.contact.linked?.ref ?? null,
+      })
+      .returning();
+  } else if (
+    (input.contact.name && input.contact.name !== contact.profileName) ||
+    (input.contact.avatarUrl && input.contact.avatarUrl !== contact.avatarUrl) ||
+    (input.contact.linked && input.contact.linked.ref !== contact.linkedRef)
+  ) {
+    [contact] = await db
+      .update(schema.contacts)
+      .set({
+        // Only the profile name — a curated `name` outlives every inbound.
+        profileName: input.contact.name ?? contact.profileName,
+        avatarUrl: input.contact.avatarUrl ?? contact.avatarUrl,
+        // An existing link is never cleared by an ingest that omits one:
+        // absence here means "didn't look it up", not "no longer linked".
+        linkedAppId: input.contact.linked?.appId ?? contact.linkedAppId,
+        linkedRef: input.contact.linked?.ref ?? contact.linkedRef,
+      })
+      .where(eq(schema.contacts.id, contact.id))
+      .returning();
+  }
+
+  // Conversation: one per contact; new inbound reopens a closed thread.
+  let [conv] = await db
+    .select()
+    .from(schema.conversations)
+    .where(and(eq(schema.conversations.orgId, org), eq(schema.conversations.contactId, contact.id)))
+    .limit(1);
+  if (!conv) {
+    [conv] = await db
+      .insert(schema.conversations)
+      .values({
+        orgId: org,
+        contactId: contact.id,
+        channel: input.channel,
+        subject: input.subject ?? null,
+        lastMessageAt: at,
+        lastMessagePreview: preview(input.message.body),
+      })
+      .returning();
+  }
+
+  // Idempotency: same externalId → acknowledge without inserting.
+  if (input.message.externalId) {
+    const [dupe] = await db
+      .select({ id: schema.messages.id })
+      .from(schema.messages)
+      .where(
+        and(eq(schema.messages.orgId, org), eq(schema.messages.externalId, input.message.externalId)),
+      )
+      .limit(1);
+    if (dupe) return { conversationId: conv.id, messageId: dupe.id, duplicate: true };
+  }
+
+  // Flows written before kind=reaction existed send a reaction as an inbound
+  // message whose media type is "reaction" with no file attached.
+  const reaction =
+    input.message.kind === "reaction" ||
+    (input.message.kind === "inbound" &&
+      !input.message.media?.ref?.trim() &&
+      input.message.media?.type?.trim() === "reaction");
+  // A removed reaction carries no emoji. There is nothing to show.
+  if (reaction && !input.message.body.trim()) {
+    return { conversationId: conv.id, messageId: null, duplicate: false };
+  }
+  const kind = reaction ? "reaction" : input.message.kind;
+  const inbound = kind === "inbound";
+  const mediaRef = input.message.media?.ref?.trim() || null;
+  const [msg] = await db
+    .insert(schema.messages)
+    .values({
+      orgId: org,
+      conversationId: conv.id,
+      kind,
+      body: input.message.body,
+      authorName: input.message.authorName ?? (kind === "outbound" ? "Agent" : contact.name ?? contact.handle),
+      status: kind === "outbound" ? "sent" : null,
+      externalId: input.message.externalId ?? null,
+      mediaRef,
+      mediaType: (mediaRef && input.message.media?.type?.trim()) || null,
+      createdAt: at,
+    })
+    .returning();
+
+  // Keep the attachment's bytes now, while the channel still serves them:
+  // both reference shapes expire, and "we'll fetch it later" loses the file.
+  // Best-effort — a failed fetch leaves mediaRef in place (backfillable) and
+  // the timeline falls back to the filename, which is why the helper never
+  // throws.
+  if (mediaRef) {
+    try {
+      const stored = await storeMedia(env, org, msg.id, mediaRef);
+      if (stored) {
+        await db
+          .update(schema.messages)
+          .set({ mediaKey: stored.key, mediaMime: stored.mime, mediaName: stored.name })
+          .where(eq(schema.messages.id, msg.id));
+      }
+    } catch {
+      // Swallowed on purpose: the message arrived; losing its bytes is a
+      // degraded timeline, not a failed ingest.
+    }
+  }
+
+  // A reaction lives inside the thread. It doesn't move the thread up the
+  // list, reopen it, or mark it unread: nobody needs to act on it.
+  if (!reaction) {
+    await db
+      .update(schema.conversations)
+      .set({
+        subject: input.subject ?? conv.subject,
+        // History backfill can arrive out of order — only advance the clock.
+        ...(at >= conv.lastMessageAt
+          ? {
+              lastMessageAt: at,
+              lastMessagePreview: preview(
+                input.message.body ||
+                  (input.message.media?.ref?.trim()
+                    ? `[${input.message.media.type?.trim() || "attachment"}]`
+                    : ""),
+              ),
+            }
+          : {}),
+        ...(inbound ? { unread: 1, status: "open" } : {}),
+      })
+      .where(eq(schema.conversations.id, conv.id));
+  }
+  await refreshReplyState(db, conv.id);
+
+  return { conversationId: conv.id, messageId: msg.id, duplicate: false };
+}
 
 /* ------------------------------- conversations ----------------------------- */
 
@@ -1995,7 +2060,12 @@ api.openapi(
           // decision and is honoured as-is; the default is only a fallback, so
           // the sender may prefer a number local to the recipient over it.
           fromPhoneNumberId: input.fromPhoneNumberId ?? null,
-          defaultPhoneNumberId: await readSetting(db, conv.orgId, DEFAULT_PHONE_KEY),
+          defaultPhoneNumberId: await readSetting(
+            db,
+            conv.orgId,
+            conv.channel === "sms" ? SMS_DEFAULT_KEY : DEFAULT_PHONE_KEY,
+          ),
+          callbackOrigin: new URL(c.req.url).origin,
           // Only a template may pick a local number. The 24-hour window belongs
           // to the number the contact actually wrote to, and we do not record
           // which one that was — so switching sender on a freeform reply would
@@ -2016,10 +2086,15 @@ api.openapi(
             .where(eq(schema.templates.id, tpl.id));
         }
       } catch (err) {
-        // Record the failure on the message rather than losing the draft —
-        // the thread shows why, and the text is still there to retry.
-        status = "failed";
-        error = `${err}`;
+        if (err instanceof NotConnected) {
+          // The app can't reach this channel itself (SMS without Twilio), so
+          // it stays queued for the agent, exactly as before SMS had a sender.
+        } else {
+          // Record the failure on the message rather than losing the draft —
+          // the thread shows why, and the text is still there to retry.
+          status = "failed";
+          error = `${err}`;
+        }
       }
     }
 
@@ -2816,6 +2891,8 @@ type SendResult = {
 
 /** Which number outbound WhatsApp leaves from. */
 const DEFAULT_PHONE_KEY = "whatsapp_default_phone_number_id";
+/** Which Twilio number (its PN… sid) outbound SMS leaves from. */
+const SMS_DEFAULT_KEY = "sms_default_number_sid";
 
 // ── Profile source: the org's system of record for people ───────────────────
 //
@@ -2999,9 +3076,51 @@ const CHANNEL_SENDERS: Record<
       defaultPhoneNumberId?: string | null;
       /** May this send switch to a number local to the recipient? */
       preferLocal?: boolean;
+      /** This app's own origin, for provider callbacks (SMS delivery status). */
+      callbackOrigin?: string;
     },
   ) => Promise<SendResult>
 > = {
+  sms: async (env, to, message) => {
+    if (message.template) {
+      throw new Error("SMS has no templates: send the text itself");
+    }
+    const { client, sid } = await twilioAccount(env);
+    const numbers = twilioNumbers(await client.get(twilioEndpoint(sid, "IncomingPhoneNumbers.json")));
+    if (numbers.length === 0) {
+      throw new Error("no SMS-capable number on the connected Twilio account");
+    }
+    // Same order as WhatsApp: a number a human picked, then one in the
+    // recipient's country, then the default, then the only one. SMS has no
+    // session to keep, so the local number is always allowed.
+    const from = message.fromPhoneNumberId
+      ? numbers.find((n) => n.id === message.fromPhoneNumberId)
+      : (numbers.find(sameCountry(to)) ??
+        (message.defaultPhoneNumberId
+          ? numbers.find((n) => n.id === message.defaultPhoneNumberId)
+          : undefined) ??
+        (numbers.length === 1 ? numbers[0] : undefined));
+    if (!from) {
+      throw new Error(
+        message.fromPhoneNumberId
+          ? `${message.fromPhoneNumberId} is not an SMS number on this Twilio account`
+          : "several Twilio numbers and no default: set one with POST /api/sms/numbers/:id/connect",
+      );
+    }
+    const result = (await client.post(
+      twilioEndpoint(sid, "Messages.json"),
+      twilioForm({
+        To: to,
+        From: from.displayPhoneNumber,
+        Body: message.body || undefined,
+        // MMS: Twilio fetches the file itself, as Meta does.
+        MediaUrl: message.attachment?.url,
+        StatusCallback: message.callbackOrigin ? `${message.callbackOrigin}/api/sms/status` : undefined,
+      }),
+      FORM,
+    )) as { sid?: unknown } | null;
+    return { externalId: typeof result?.sid === "string" ? result.sid : null };
+  },
   whatsapp: async (env, to, message) => {
     const { client, wabaId } = whatsappBusiness(env);
 
@@ -3664,51 +3783,322 @@ api.openapi(
     if (!org) return c.json({ error: "unauthorized" }, 401);
     const { externalId } = c.req.valid("param");
     const body = c.req.valid("json");
-    const db = dbFor(c.env);
-
-    const [msg] = await db
-      .select({
-        id: schema.messages.id,
-        status: schema.messages.status,
-        conversationId: schema.messages.conversationId,
-      })
-      .from(schema.messages)
-      .where(and(eq(schema.messages.orgId, org), eq(schema.messages.externalId, externalId)))
-      .limit(1);
+    const result = await applyReceipt(dbFor(c.env), org, externalId, body.status, body.error);
     // A receipt for something we never stored is not an error worth retrying —
     // it usually means the outbound was sent outside this app.
-    if (!msg) return c.json({ error: `no message with externalId "${externalId}"` }, 404);
+    if (!result) return c.json({ error: `no message with externalId "${externalId}"` }, 404);
+    return c.json({ ok: true, ...result }, 200);
+  },
+);
 
-    const next = providerStatusToOurs[body.status];
-    const current = msg.status ?? "";
+/**
+ * Move one outbound message forward on a provider receipt. Shared by the
+ * receipt route (WhatsApp, through the agent's flow) and the Twilio status
+ * webhook. Returns null when no message carries that provider id.
+ */
+async function applyReceipt(
+  db: DB,
+  org: string,
+  externalId: string,
+  providerStatus: "sent" | "delivered" | "read" | "failed",
+  providerError?: string,
+): Promise<{ status: string; changed: boolean } | null> {
+  const [msg] = await db
+    .select({
+      id: schema.messages.id,
+      status: schema.messages.status,
+      conversationId: schema.messages.conversationId,
+    })
+    .from(schema.messages)
+    .where(and(eq(schema.messages.orgId, org), eq(schema.messages.externalId, externalId)))
+    .limit(1);
+  if (!msg) return null;
 
-    // Never overwrite a terminal outcome, and never walk backwards.
-    const isTerminal = current === "undelivered" || current === "failed";
-    const goesBackwards =
-      next in DELIVERY_RANK &&
-      current in DELIVERY_RANK &&
-      DELIVERY_RANK[next] <= DELIVERY_RANK[current];
-    if (isTerminal || goesBackwards) {
-      return c.json({ ok: true, status: current, changed: false }, 200);
-    }
+  const next = providerStatusToOurs[providerStatus];
+  const current = msg.status ?? "";
 
+  // Never overwrite a terminal outcome, and never walk backwards.
+  const isTerminal = current === "undelivered" || current === "failed";
+  const goesBackwards =
+    next in DELIVERY_RANK &&
+    current in DELIVERY_RANK &&
+    DELIVERY_RANK[next] <= DELIVERY_RANK[current];
+  if (isTerminal || goesBackwards) return { status: current, changed: false };
+
+  await db
+    .update(schema.messages)
+    .set({
+      status: next,
+      error: next === "undelivered" ? (providerError ?? "the provider did not deliver it") : null,
+    })
+    .where(eq(schema.messages.id, msg.id));
+  // Same contract as a failed send: an undelivered receipt flips the thread
+  // unread so it asks for attention once, rather than pinning to the top.
+  if (next === "undelivered") {
     await db
-      .update(schema.messages)
-      .set({
-        status: next,
-        error: next === "undelivered" ? (body.error ?? "the provider did not deliver it") : null,
-      })
-      .where(eq(schema.messages.id, msg.id));
-    // Same contract as a failed send: an undelivered receipt flips the thread
-    // unread so it asks for attention once, rather than pinning to the top.
-    if (next === "undelivered") {
-      await db
-        .update(schema.conversations)
-        .set({ unread: 1 })
-        .where(eq(schema.conversations.id, msg.conversationId));
-      await refreshReplyState(db, msg.conversationId);
+      .update(schema.conversations)
+      .set({ unread: 1 })
+      .where(eq(schema.conversations.id, msg.conversationId));
+    await refreshReplyState(db, msg.conversationId);
+  }
+  return { status: next, changed: true };
+}
+
+/* ----------------------------------- SMS ----------------------------------- */
+//
+// SMS reaches the app straight from Twilio, with no agent flow in between: the
+// webhooks are public routes (clawnify.json), and what makes a request
+// trustworthy is Twilio's signature, checked against the connected Auth Token.
+// Public routes carry no identity headers, so the org comes from the
+// deployment's CLAWNIFY_ORG_ID.
+
+type TwilioNumber = { id: string; displayPhoneNumber: string; friendlyName: string; smsUrl: string };
+
+/** The account's numbers that can send SMS. */
+function twilioNumbers(result: unknown): TwilioNumber[] {
+  const rows = (result as { incoming_phone_numbers?: unknown } | null)?.incoming_phone_numbers;
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+    .filter((r) => (r.capabilities as { sms?: unknown } | undefined)?.sms !== false)
+    .map((r) => ({
+      id: String(r.sid ?? ""),
+      displayPhoneNumber: String(r.phone_number ?? ""),
+      friendlyName: String(r.friendly_name ?? ""),
+      smsUrl: String(r.sms_url ?? ""),
+    }));
+}
+
+const smsInboundUrl = (origin: string) => `${origin}/api/sms/inbound`;
+
+/**
+ * Twilio's request signature: HMAC-SHA1 over the full URL it called followed by
+ * every POST field, sorted by name, as name+value; base64; keyed by the Auth
+ * Token. Verified with subtle.verify, which compares in constant time.
+ */
+async function twilioSignatureValid(
+  authToken: string,
+  url: string,
+  fields: [string, string][],
+  signature: string | undefined,
+): Promise<boolean> {
+  if (!signature) return false;
+  let expected: Uint8Array<ArrayBuffer>;
+  try {
+    expected = Uint8Array.from(atob(signature), (ch) => ch.charCodeAt(0));
+  } catch {
+    return false;
+  }
+  const data =
+    url +
+    [...fields]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => k + v)
+      .join("");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(authToken),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["verify"],
+  );
+  return crypto.subtle.verify("HMAC", key, expected, new TextEncoder().encode(data));
+}
+
+/**
+ * Read and authenticate one Twilio webhook. Null means refuse it: no org, no
+ * Twilio connection, a bad signature, or an account that isn't the connected
+ * one. Each is a 403 rather than a detailed error, since the caller may be
+ * anyone.
+ */
+async function twilioWebhook(c: {
+  env: Env["Bindings"];
+  req: { url: string; header(name: string): string | undefined; formData(): Promise<FormData> };
+}): Promise<{ org: string; fields: Record<string, string> } | null> {
+  const org = c.env.CLAWNIFY_ORG_ID?.trim();
+  if (!org) return null;
+  let account: Awaited<ReturnType<typeof twilioAccount>>;
+  try {
+    account = await twilioAccount(c.env);
+  } catch {
+    return null;
+  }
+  const form = await c.req.formData();
+  const pairs: [string, string][] = [];
+  for (const [k, v] of form.entries()) if (typeof v === "string") pairs.push([k, v]);
+  const ok = await twilioSignatureValid(account.authToken, c.req.url, pairs, c.req.header("X-Twilio-Signature"));
+  if (!ok) return null;
+  const fields = Object.fromEntries(pairs);
+  if (fields.AccountSid !== account.sid) return null;
+  return { org, fields };
+}
+
+/** An empty TwiML reply: received, and no automatic answer. */
+const twimlEmpty = () =>
+  new Response("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>", {
+    headers: { "content-type": "text/xml" },
+  });
+
+// Raw routes, like /api/media: Twilio posts a form and expects TwiML back, and
+// the typed-route machinery only speaks JSON.
+api.post("/api/sms/inbound", async (c) => {
+  const hook = await twilioWebhook(c);
+  if (!hook) return c.json({ error: "forbidden" }, 403);
+  const f = hook.fields;
+  if (!f.From || !f.MessageSid) return twimlEmpty();
+  const media = Number(f.NumMedia ?? "0") > 0 && f.MediaUrl0 ? f.MediaUrl0 : null;
+  await ingestMessage(c.env, hook.org, {
+    channel: "sms",
+    contact: { handle: f.From },
+    message: {
+      kind: "inbound",
+      body: f.Body ?? "",
+      externalId: f.MessageSid,
+      ...(media ? { media: { ref: media, type: mimeToKind(f.MediaContentType0 ?? null) } } : {}),
+    },
+  });
+  return twimlEmpty();
+});
+
+/** What a few common Twilio delivery errors mean, for the thread. */
+const TWILIO_ERRORS: Record<string, string> = {
+  "30003": "the phone is unreachable or off",
+  "30004": "the recipient blocked this number",
+  "30005": "the number does not exist",
+  "30006": "the number is a landline or can't receive SMS",
+  "30007": "the carrier filtered it as spam",
+  "30034": "the sending number is not registered for US messaging (A2P 10DLC)",
+};
+
+api.post("/api/sms/status", async (c) => {
+  const hook = await twilioWebhook(c);
+  if (!hook) return c.json({ error: "forbidden" }, 403);
+  const f = hook.fields;
+  const status = (
+    { sent: "sent", delivered: "delivered", read: "read", failed: "failed", undelivered: "failed" } as const
+  )[f.MessageStatus as "sent"];
+  // queued / sending / accepted say nothing the send didn't already.
+  if (status && f.MessageSid) {
+    const code = f.ErrorCode?.trim();
+    const error = code ? `Twilio ${code}: ${TWILIO_ERRORS[code] ?? "the carrier did not deliver it"}` : undefined;
+    await applyReceipt(dbFor(c.env), hook.org, f.MessageSid, status, error);
+  }
+  return c.body(null, 204);
+});
+
+const SmsNumberSchema = z
+  .object({
+    id: z.string(),
+    number: z.string(),
+    friendlyName: z.string(),
+    /** True when this number's incoming SMS come to this inbox. */
+    connected: z.boolean(),
+    /** Where incoming SMS go now, when it is somewhere else. */
+    otherWebhook: z.string().nullable(),
+    /** True when outbound SMS leave from this number by default. */
+    isDefault: z.boolean(),
+  })
+  .openapi("SmsNumber");
+
+api.openapi(
+  createRoute({
+    method: "get",
+    path: "/api/sms/numbers",
+    summary: "SMS numbers on the connected Twilio account",
+    description:
+      "Setup view for SMS: each Twilio number, whether its incoming texts reach this inbox, and which one sends by default.",
+    responses: {
+      200: jsonRes(z.object({ items: z.array(SmsNumberSchema) }).openapi("SmsNumberList"), "The numbers"),
+      401: jsonRes(ErrorSchema, "No org identity"),
+      424: jsonRes(ErrorSchema, "Twilio isn't connected or returned an error"),
+    },
+  }),
+  async (c) => {
+    const org = orgId(c);
+    if (!org) return c.json({ error: "unauthorized" }, 401);
+    try {
+      const { client, sid } = await twilioAccount(c.env);
+      const numbers = twilioNumbers(await client.get(twilioEndpoint(sid, "IncomingPhoneNumbers.json")));
+      const configured = await readSetting(dbFor(c.env), org, SMS_DEFAULT_KEY);
+      const effective = configured ?? (numbers.length === 1 ? numbers[0].id : null);
+      const ours = smsInboundUrl(new URL(c.req.url).origin);
+      return c.json(
+        {
+          items: numbers.map((n) => ({
+            id: n.id,
+            number: n.displayPhoneNumber,
+            friendlyName: n.friendlyName,
+            connected: n.smsUrl === ours,
+            otherWebhook: n.smsUrl && n.smsUrl !== ours ? n.smsUrl : null,
+            isDefault: n.id === effective,
+          })),
+        },
+        200,
+      );
+    } catch (err) {
+      return c.json({ error: `could not reach twilio: ${err}` }, 424);
     }
-    return c.json({ ok: true, status: next, changed: true }, 200);
+  },
+);
+
+api.openapi(
+  createRoute({
+    method: "post",
+    path: "/api/sms/numbers/:id/connect",
+    summary: "Receive and send SMS on this Twilio number",
+    description:
+      "Points the number's incoming SMS at this inbox and makes it the default sender. A number whose texts already go to another webhook is left alone unless `replace` is true, since repointing it cuts off whatever receives them now.",
+    request: {
+      params: IdParam,
+      body: jsonBody(z.object({ replace: z.boolean().default(false) }).openapi("SmsConnect")),
+    },
+    responses: {
+      200: jsonRes(OkSchema, "Connected"),
+      401: jsonRes(ErrorSchema, "No org identity"),
+      404: jsonRes(ErrorSchema, "No such SMS number on the account"),
+      409: jsonRes(ErrorSchema, "The number's texts go somewhere else"),
+      424: jsonRes(ErrorSchema, "Twilio isn't connected or returned an error"),
+    },
+  }),
+  async (c) => {
+    const org = orgId(c);
+    if (!org) return c.json({ error: "unauthorized" }, 401);
+    const { id } = c.req.valid("param");
+    const { replace } = c.req.valid("json");
+    if (!/^PN[0-9a-f]{32}$/i.test(id)) return c.json({ error: "no such SMS number" }, 404);
+    const ours = smsInboundUrl(new URL(c.req.url).origin);
+    try {
+      const { client, sid } = await twilioAccount(c.env);
+      const numbers = twilioNumbers(await client.get(twilioEndpoint(sid, "IncomingPhoneNumbers.json")));
+      const target = numbers.find((n) => n.id === id);
+      if (!target) return c.json({ error: "no such SMS number on the connected Twilio account" }, 404);
+      if (target.smsUrl && target.smsUrl !== ours && !replace) {
+        return c.json(
+          { error: `this number's texts go to ${target.smsUrl}; send replace: true to move them here` },
+          409,
+        );
+      }
+      if (target.smsUrl !== ours) {
+        await client.post(
+          twilioEndpoint(sid, `IncomingPhoneNumbers/${id}.json`),
+          twilioForm({ SmsUrl: ours, SmsMethod: "POST" }),
+          FORM,
+        );
+      }
+    } catch (err) {
+      return c.json({ error: `could not reach twilio: ${err}` }, 424);
+    }
+
+    const db = dbFor(c.env);
+    const now = new Date().toISOString();
+    await db
+      .insert(schema.settings)
+      .values({ orgId: org, key: SMS_DEFAULT_KEY, value: id, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [schema.settings.orgId, schema.settings.key],
+        set: { value: id, updatedAt: now },
+      });
+    return c.json({ ok: true }, 200);
   },
 );
 

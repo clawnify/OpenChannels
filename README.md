@@ -41,6 +41,7 @@ WhatsApp / Telegram / Slack / Email
   link to that record rather than copying it, so your CRM stays the one place a
   person's details live
 - WhatsApp marketing templates go out through Meta's Marketing Messages API, everything else through the Cloud API. Accept the Marketing Messages API terms on your WhatsApp Business account; until you do, marketing templates fall back to the Cloud API, which stops carrying them on 13 October 2027
+- SMS through your own Twilio account: connect Twilio (Account SID and Auth Token), then point a number at the inbox with `POST /api/sms/numbers/:id/connect`. Replies go out from the number in the recipient's country when you have one, incoming texts and delivery receipts arrive directly, and every webhook is checked against Twilio's signature. US numbers need toll-free verification or A2P 10DLC registration on Twilio before carriers deliver them
 - Multi-tenant by construction (org-scoped rows, platform-injected identity)
 - Dark mode, agent mode (`?agent`), keyboard-friendly composer
 

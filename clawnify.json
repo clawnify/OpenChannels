@@ -9,12 +9,25 @@
     "database": true,
     "storage": true,
     "credentials": [
-      "whatsapp-business"
+      "whatsapp-business",
+      "twilio"
     ]
   },
   "api": {
     "public_routes": [
-      "/api/media/**"
+      "/api/media/**",
+      {
+        "path": "/api/sms/inbound",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/sms/status",
+        "methods": [
+          "POST"
+        ]
+      }
     ]
   },
   "env": {
