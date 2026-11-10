@@ -81,6 +81,10 @@ itself, so you don't have to reason about it:
   shut thread. That is not retryable — send `template` instead.
 - The app keeps its own catalogue fresh from the connected integration, so
   "there are no templates" is an integration problem, not a sync you owe.
+- WhatsApp does not deliver **marketing** templates to US numbers. A reply that
+  sends one to a US number comes back `status: "failed"` with that reason and
+  nothing goes out. Not retryable: send a utility template, or reach the person
+  another way. Canada and the rest of +1 are not affected.
 
 ## People: this inbox is not the CRM
 

@@ -2,6 +2,7 @@ import { OpenAPIHono, createRoute, z, user, orgId, caller } from "@clawnify/app"
 import { connect } from "@clawnify/connections";
 import { getDB, and, or, eq, desc, asc, lt, like, count, sql, inArray, isNull, isNotNull } from "@clawnify/db";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
+import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import * as schema from "./schema";
 
 // CLAWNIFY_TOKEN is the org service token, injected as a secret on every
@@ -3068,7 +3069,8 @@ const CHANNEL_SENDERS: Record<
 
     const phone = objectEndpoint(from.id, "phone number ID");
     if (message.template) {
-      return sendTemplate(client, phone, message.template, {
+      const category = await usMarketingCheck(client, to, message.template);
+      const sent = await sendTemplate(client, phone, { ...message.template, category }, {
         messaging_product: "whatsapp",
         to: toDigits,
         type: "template",
@@ -3078,11 +3080,45 @@ const CHANNEL_SENDERS: Record<
           components: templateComponents(message.template.variables),
         },
       });
+      // The check re-read a stale MARKETING from Meta: hand the real category
+      // back so the stored row is corrected.
+      return category !== message.template.category && !sent.category ? { ...sent, category } : sent;
     }
     const result = await client.post(`${phone}/messages`, payload);
     return { externalId: wamidOf(result) };
   },
 };
+
+/**
+ * WhatsApp does not deliver marketing templates to US numbers ("+1 dialing
+ * code and a US area code", Meta's per-user marketing limits page). Meta still
+ * accepts the send and fails it later on the status webhook with 131049, the
+ * same code as its per-user frequency cap, so the thread would show a vague
+ * "healthy ecosystem engagement" refusal that reads like a temporary limit.
+ * Refusing here gives the real reason before anything leaves.
+ *
+ * Only numbers libphonenumber places in the US are refused. Canada, Puerto
+ * Rico and the Caribbean share +1 but are other countries, and a number it
+ * cannot place is sent as before: a wrong refusal loses a message Meta would
+ * have delivered, a missed one only fails the way it always did.
+ *
+ * The stored category can be stale, so a MARKETING one is re-read from Meta
+ * before refusing. Returns the category to send on.
+ */
+async function usMarketingCheck(
+  client: ReturnType<typeof whatsappBusiness>["client"],
+  to: string,
+  template: { name: string; category: string; externalId: string | null },
+): Promise<string> {
+  if (template.category !== "MARKETING" || !isUsNumber(to)) return template.category;
+  const current = template.externalId ? await metaTemplateCategory(client, template.externalId) : null;
+  if (current && current !== "MARKETING") return current;
+  throw new Error(
+    `"${template.name}" is a marketing template, and WhatsApp does not deliver marketing templates to US numbers. Send a utility template, or reach this person another way.`,
+  );
+}
+
+const isUsNumber = (handle: string) => parsePhoneNumberFromString(handle)?.country === "US";
 
 /** A send the provider refused outright. Never a timeout or a 5xx, which may have gone out. */
 const REFUSED = /\b4\d\d: /;
