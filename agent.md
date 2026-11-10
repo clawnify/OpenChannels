@@ -10,7 +10,8 @@ in that path — don't relay it, don't confirm it. Everything else still queues 
 `/api/outbox` for you.
 
 SMS works the same way once the org has connected **Twilio** (Account SID and
-Auth Token): replies go out from the app, and Twilio posts incoming texts and
+Auth Token), or has set `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` as
+environment variables the way OpenDialer takes them: replies go out from the app, and Twilio posts incoming texts and
 delivery receipts straight to the app, so don't mirror SMS that arrive there.
 To set it up, `GET /api/sms/numbers` lists the account's numbers and
 `POST /api/sms/numbers/:id/connect` points one at this inbox and makes it the

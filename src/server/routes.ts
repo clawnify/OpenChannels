@@ -1,5 +1,5 @@
 import { OpenAPIHono, createRoute, z, user, orgId, caller } from "@clawnify/app";
-import { connect } from "@clawnify/connections";
+import { connect, secret } from "@clawnify/connections";
 import { getDB, and, or, eq, desc, asc, lt, like, count, sql, inArray, isNull, isNotNull } from "@clawnify/db";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "./schema";
@@ -29,6 +29,9 @@ type Env = {
      * Twilio webhooks read the org from here.
      */
     CLAWNIFY_ORG_ID?: string;
+    /** Twilio as OpenDialer takes it: org environment variables. Used when no connection. */
+    TWILIO_ACCOUNT_SID?: string;
+    TWILIO_AUTH_TOKEN?: string;
   };
 };
 const api = new OpenAPIHono<Env>();
@@ -58,22 +61,39 @@ const TWILIO_SERVICE = "twilio";
 class NotConnected extends Error {}
 
 async function twilioAccount(env: Env["Bindings"]) {
-  const client = connect(TWILIO_SERVICE, env as never);
+  let client = connect(TWILIO_SERVICE, env as never);
   let credential: string | null = null;
   try {
     credential = await (client as unknown as { token(): Promise<string | null> }).token();
   } catch {
     credential = null;
   }
-  const split = credential?.indexOf(":") ?? -1;
-  const sid = split > 0 ? credential!.slice(0, split) : "";
-  if (!/^AC[0-9a-f]{32}$/i.test(sid)) {
+  // No connection: take the TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN environment
+  // variables OpenDialer uses, so an org that set Twilio up once there needn't
+  // enter it again. The client is then built from those alone, since the
+  // broker would answer for the (missing) connection instead.
+  if (!validSid(credential)) {
+    const envSid = secret("TWILIO_ACCOUNT_SID", env as never);
+    const envToken = secret("TWILIO_AUTH_TOKEN", env as never);
+    if (envSid && envToken) {
+      credential = `${envSid.trim()}:${envToken.trim()}`;
+      client = connect(TWILIO_SERVICE, { TWILIO_BEARER_TOKEN: credential } as never);
+    }
+  }
+  if (!validSid(credential)) {
     throw new NotConnected(
       "Twilio is not connected: connect it in Integrations with the Account SID and Auth Token",
     );
   }
-  return { client, sid, authToken: credential!.slice(split + 1) };
+  const split = credential!.indexOf(":");
+  return { client, sid: credential!.slice(0, split), authToken: credential!.slice(split + 1) };
 }
+
+/** A "SID:token" credential whose SID is a Twilio account id. */
+const validSid = (credential: string | null) => {
+  const split = credential?.indexOf(":") ?? -1;
+  return split > 0 && /^AC[0-9a-f]{32}$/i.test(credential!.slice(0, split));
+};
 
 const twilioEndpoint = (sid: string, resource: string) => `/2010-04-01/Accounts/${sid}/${resource}`;
 

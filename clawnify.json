@@ -32,7 +32,9 @@
   },
   "env": {
     "optional": [
-      "CRM_APP_ID"
+      "CRM_APP_ID",
+      "TWILIO_ACCOUNT_SID",
+      "TWILIO_AUTH_TOKEN"
     ]
   }
 }

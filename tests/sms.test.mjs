@@ -118,6 +118,23 @@ test('without Twilio connected, an SMS reply stays queued for the agent as befor
   }
 });
 
+test('without a connection, the TWILIO_* variables OpenDialer uses are enough', async () => {
+  const envOnly = instance({ TWILIO_ACCOUNT_SID: SID, TWILIO_AUTH_TOKEN: AUTH, CLAWNIFY_ORG_ID: org });
+  try {
+    const envDb = await envOnly.getD1Database('DB');
+    const schema = await readFile('schema.sql', 'utf8');
+    await envDb.batch(schema.split(';').filter(s => s.trim()).map(s => envDb.prepare(s)));
+    const conv = await (await post('/api/conversations', { channel: 'sms', handle: '+12125551234' }, envOnly)).json();
+    calls = [];
+    const msg = await (await post(`/api/conversations/${conv.id}/reply`, { body: 'hi' }, envOnly)).json();
+    assert.equal(msg.status, 'accepted');
+    const sent = calls.find((c) => c.path.endsWith('/Messages.json'));
+    assert.equal(sent.auth, `Basic ${btoa(`${SID}:${AUTH}`)}`);
+  } finally {
+    await envOnly.dispose();
+  }
+});
+
 test('an inbound SMS with a valid signature lands in the thread, and Twilio gets empty TwiML', async () => {
   const fields = { AccountSid: SID, MessageSid: 'SM' + 'b'.repeat(32), From: '+13105550199', To: '+16465550100', Body: 'Running 10 min late', NumMedia: '0' };
   const res = await webhook('/api/sms/inbound', fields);
