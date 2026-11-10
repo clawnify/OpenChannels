@@ -40,6 +40,7 @@ WhatsApp / Telegram / Slack / Email
   inbox at it once and pick a person instead of typing a phone number. Contacts
   link to that record rather than copying it, so your CRM stays the one place a
   person's details live
+- WhatsApp marketing templates go out through Meta's Marketing Messages API, everything else through the Cloud API. Accept the Marketing Messages API terms on your WhatsApp Business account; until you do, marketing templates fall back to the Cloud API, which stops carrying them on 13 October 2027
 - Multi-tenant by construction (org-scoped rows, platform-injected identity)
 - Dark mode, agent mode (`?agent`), keyboard-friendly composer
 
